@@ -1,0 +1,9 @@
+{
+  "model_architecture": "MobileNetV3 Multi-Task Classifier",
+  "dataset": "VeRi-776 Benchmark",
+  "total_train_samples": 3000,
+  "total_test_samples": 750,
+  "test_color_accuracy": "71.20%",
+  "test_type_accuracy": "52.40%",
+  "saved_at": "2026-09-10 12:17:07"
+}

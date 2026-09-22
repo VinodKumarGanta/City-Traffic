@@ -1,0 +1,13 @@
+{
+  "model": "Deep Learning Accident Classifier (Dense + BatchNorm + Dropout)",
+  "features": [
+    "Speed Drop",
+    "Direction Change",
+    "Vehicle Distance",
+    "Area Ratio",
+    "Traffic Density"
+  ],
+  "accuracy": "99.92%",
+  "loss": "0.0027",
+  "saved_at": "2026-09-10 12:20:19"
+}
