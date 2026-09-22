@@ -31,8 +31,8 @@ interface CitizenCommuterViewProps {
 }
 
 export const CitizenCommuterView: React.FC<CitizenCommuterViewProps> = ({
-  corridors,
-  citizenReports,
+  corridors = [],
+  citizenReports = [],
   onAddCitizenReport,
   onUpvoteReport
 }) => {

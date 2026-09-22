@@ -311,7 +311,7 @@ const createAlertIcon = (severity: TrafficAlert['severity']) => {
 };
 
 export const CityMap: React.FC<CityMapProps> = ({
-  cameras,
+  cameras = [],
   selectedCameraId,
   onSelectCamera,
   activeTrajectory,
@@ -727,7 +727,7 @@ export const CityMap: React.FC<CityMapProps> = ({
           ))}
 
         {/* Active Trajectory Line & Checkpoints */}
-        {showTrajectory && activeTrajectory && (
+        {showTrajectory && activeTrajectory && activeTrajectory.pathCoordinates && activeTrajectory.pathCoordinates.length > 0 && (
           <>
             <Polyline
               positions={activeTrajectory.pathCoordinates}
@@ -738,7 +738,7 @@ export const CityMap: React.FC<CityMapProps> = ({
                 dashArray: '10, 8'
               }}
             />
-            {activeTrajectory.checkpoints.map((cp, idx) => (
+            {(activeTrajectory.checkpoints || []).map((cp, idx) => (
               <CircleMarker
                 key={`cp-${idx}`}
                 center={[cp.lat, cp.lng]}

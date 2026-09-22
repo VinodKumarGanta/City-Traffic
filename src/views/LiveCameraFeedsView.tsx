@@ -23,7 +23,7 @@ interface LiveCameraFeedsViewProps {
 }
 
 export const LiveCameraFeedsView: React.FC<LiveCameraFeedsViewProps> = ({
-  cameras,
+  cameras = [],
   selectedCamera,
   onSelectCamera,
   latestDetection,
@@ -34,9 +34,10 @@ export const LiveCameraFeedsView: React.FC<LiveCameraFeedsViewProps> = ({
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [inspectingCamera, setInspectingCamera] = useState<CameraNode | null>(null);
 
-  const uniqueSectors = Array.from(new Set(cameras.map(cam => cam.sectorId))).filter(Boolean);
+  const safeCameras = cameras || [];
+  const uniqueSectors = Array.from(new Set(safeCameras.map(cam => cam.sectorId))).filter(Boolean);
 
-  const filteredCameras = cameras.filter(cam => {
+  const filteredCameras = safeCameras.filter(cam => {
     const matchesSector = selectedSector === 'ALL' || cam.sectorId === selectedSector;
     const matchesStatus = statusFilter === 'ALL' || cam.status === statusFilter;
     const matchesSearch = cam.locationName.toLowerCase().includes(searchQuery.toLowerCase()) || 
@@ -118,7 +119,7 @@ export const LiveCameraFeedsView: React.FC<LiveCameraFeedsViewProps> = ({
             key={cam.id}
             onClick={() => onSelectCamera(cam.id)}
             className={`h-72 bg-slate-900/90 border rounded-xl p-2 flex flex-col justify-between transition-all cursor-pointer group ${
-              selectedCamera.id === cam.id
+              selectedCamera?.id === cam.id
                 ? 'border-cyan-500 shadow-xl shadow-cyan-500/10 ring-1 ring-cyan-500/50'
                 : 'border-slate-800 hover:border-slate-700'
             }`}
@@ -138,7 +139,7 @@ export const LiveCameraFeedsView: React.FC<LiveCameraFeedsViewProps> = ({
             <div className="flex-1 mt-1">
               <CameraFeedCanvas
                 camera={cam}
-                latestDetection={selectedCamera.id === cam.id ? latestDetection : null}
+                latestDetection={selectedCamera?.id === cam.id ? latestDetection : null}
                 privacyMaskEnabled={privacyMaskEnabled}
               />
             </div>

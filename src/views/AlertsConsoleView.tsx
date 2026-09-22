@@ -21,21 +21,22 @@ interface AlertsConsoleViewProps {
 }
 
 export const AlertsConsoleView: React.FC<AlertsConsoleViewProps> = ({
-  alerts,
+  alerts = [],
   privacyMaskEnabled,
   onUpdateAlertStatus
 }) => {
+  const safeAlerts = alerts || [];
   const [selectedType, setSelectedType] = useState<string>('ALL');
   const [selectedSeverity, setSelectedSeverity] = useState<string>('ALL');
-  const [selectedAlertId, setSelectedAlertId] = useState<string>(alerts[0]?.id || '');
+  const [selectedAlertId, setSelectedAlertId] = useState<string>(safeAlerts[0]?.id || '');
 
-  const filteredAlerts = alerts.filter(alt => {
+  const filteredAlerts = safeAlerts.filter(alt => {
     const matchesType = selectedType === 'ALL' || alt.type === selectedType;
     const matchesSev = selectedSeverity === 'ALL' || alt.severity === selectedSeverity;
     return matchesType && matchesSev;
   });
 
-  const activeAlert = alerts.find(a => a.id === selectedAlertId) || alerts[0];
+  const activeAlert = safeAlerts.find(a => a.id === selectedAlertId) || safeAlerts[0];
 
   return (
     <div className="p-4 space-y-4 max-w-[1920px] mx-auto">

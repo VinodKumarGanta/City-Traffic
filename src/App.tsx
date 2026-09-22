@@ -42,18 +42,82 @@ function CommandShell() {
         />
 
         <main className="flex-1 overflow-y-auto bg-[#090d16]">
-          {s.currentView === 'overview' && <OverviewDashboard />}
-          {s.currentView === 'anpr' && <ANPRTrajectoryView />}
-          {s.currentView === 'predictive' && <PredictiveIntelligenceView />}
-          {s.currentView === 'cameras' && <LiveCameraFeedsView />}
+          {s.currentView === 'overview' && (
+            <OverviewDashboard
+              cameras={s.cameras}
+              selectedCamera={s.selectedCamera}
+              onSelectCamera={s.setSelectedCameraId}
+              activeTrajectory={s.activeTrajectory}
+              alerts={s.alerts}
+              kpis={s.kpis}
+              latestDetection={s.latestDetection}
+              privacyMaskEnabled={s.privacyMaskEnabled}
+              onNavigateToView={s.setCurrentView}
+              currentCity={s.currentCity}
+            />
+          )}
+          {s.currentView === 'anpr' && (
+            <ANPRTrajectoryView
+              cameras={s.cameras}
+              selectedCamera={s.selectedCamera}
+              latestDetection={s.latestDetection}
+              privacyMaskEnabled={s.privacyMaskEnabled}
+              onSelectTrajectoryPlate={s.setActiveTrajectoryPlate}
+            />
+          )}
+          {s.currentView === 'predictive' && (
+            <PredictiveIntelligenceView cameras={s.cameras} />
+          )}
+          {s.currentView === 'cameras' && (
+            <LiveCameraFeedsView
+              cameras={s.cameras}
+              selectedCamera={s.selectedCamera}
+              onSelectCamera={s.setSelectedCameraId}
+              latestDetection={s.latestDetection}
+              privacyMaskEnabled={s.privacyMaskEnabled}
+            />
+          )}
           {s.currentView === 'analytics' && <TrafficAnalyticsView />}
-          {s.currentView === 'alerts' && <AlertsConsoleView />}
+          {s.currentView === 'alerts' && (
+            <AlertsConsoleView
+              alerts={s.alerts}
+              privacyMaskEnabled={s.privacyMaskEnabled}
+              onUpdateAlertStatus={s.handleUpdateAlertStatus}
+            />
+          )}
           {s.currentView === 'reports' && <ReportsView />}
-          {s.currentView === 'settings' && <SettingsView />}
-          {s.currentView === 'mobile' && <MobileView />}
-          {s.currentView === 'citizen' && <CitizenCommuterView />}
-          {s.currentView === 'challan' && <PublicChallanView />}
-          {s.currentView === 'greencorridor' && <GreenCorridorView />}
+          {s.currentView === 'settings' && (
+            <SettingsView
+              privacyMaskEnabled={s.privacyMaskEnabled}
+              onTogglePrivacyMask={() => s.setPrivacyMaskEnabled(!s.privacyMaskEnabled)}
+            />
+          )}
+          {s.currentView === 'mobile' && (
+            <MobileView
+              cameras={s.cameras}
+              alerts={s.alerts}
+              kpis={s.kpis}
+              privacyMaskEnabled={s.privacyMaskEnabled}
+            />
+          )}
+          {s.currentView === 'citizen' && (
+            <CitizenCommuterView
+              corridors={s.corridors}
+              citizenReports={s.citizenReports}
+              onAddCitizenReport={s.handleAddCitizenReport}
+              onUpvoteReport={s.handleUpvoteReport}
+            />
+          )}
+          {s.currentView === 'challan' && (
+            <PublicChallanView
+              challans={s.challans}
+              onPayChallan={s.handlePayChallan}
+              onDisputeChallan={s.handleDisputeChallan}
+            />
+          )}
+          {s.currentView === 'greencorridor' && (
+            <GreenCorridorView cameras={s.cameras} />
+          )}
         </main>
       </div>
 

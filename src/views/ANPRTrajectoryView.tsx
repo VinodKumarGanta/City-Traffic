@@ -27,7 +27,7 @@ interface ANPRTrajectoryViewProps {
 }
 
 export const ANPRTrajectoryView: React.FC<ANPRTrajectoryViewProps> = ({
-  cameras,
+  cameras = [],
   selectedCamera,
   latestDetection,
   privacyMaskEnabled,
@@ -144,7 +144,7 @@ export const ANPRTrajectoryView: React.FC<ANPRTrajectoryViewProps> = ({
             <div className="flex-1">
               <CityMap
                 cameras={cameras}
-                selectedCameraId={selectedCamera.id}
+                selectedCameraId={selectedCamera?.id || cameras[0]?.id || ''}
                 activeTrajectory={trajectory}
                 center={
                   trajectory.checkpoints && trajectory.checkpoints.length > 2

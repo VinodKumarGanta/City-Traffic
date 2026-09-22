@@ -18,16 +18,18 @@ import {
   Maximize2
 } from 'lucide-react';
 
-interface OverviewDashboardProps {
-  cameras: CameraNode[];
-  selectedCamera: CameraNode;
-  onSelectCamera: (id: string) => void;
-  activeTrajectory: VehicleTrajectory | null;
-  alerts: TrafficAlert[];
-  kpis: SystemKPIs;
-  latestDetection: ANPRDetection | null;
-  privacyMaskEnabled: boolean;
-  onNavigateToView: (viewId: any) => void;
+import { useTrafficStore } from '../state/TrafficStore';
+
+export interface OverviewDashboardProps {
+  cameras?: CameraNode[];
+  selectedCamera?: CameraNode;
+  onSelectCamera?: (id: string) => void;
+  activeTrajectory?: VehicleTrajectory | null;
+  alerts?: TrafficAlert[];
+  kpis?: SystemKPIs;
+  latestDetection?: ANPRDetection | null;
+  privacyMaskEnabled?: boolean;
+  onNavigateToView?: (viewId: any) => void;
   currentCity?: string;
 }
 
@@ -43,18 +45,43 @@ const CITY_COORDINATES: Record<string, { center: [number, number]; zoom: number 
   'Secunderabad North Sector': { center: [17.4412, 78.4870], zoom: 14 },
 };
 
-export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
-  cameras,
-  selectedCamera,
-  onSelectCamera,
-  activeTrajectory,
-  alerts,
-  kpis,
-  latestDetection,
-  privacyMaskEnabled,
-  onNavigateToView,
-  currentCity
-}) => {
+export const OverviewDashboard: React.FC<OverviewDashboardProps> = (props) => {
+  const store = useTrafficStore();
+  const cameras = props.cameras ?? store.cameras ?? [];
+  const selectedCamera = props.selectedCamera ?? store.selectedCamera;
+  const onSelectCamera = props.onSelectCamera ?? store.setSelectedCameraId;
+  const activeTrajectory = props.activeTrajectory !== undefined ? props.activeTrajectory : store.activeTrajectory;
+  const alerts = props.alerts ?? store.alerts ?? [];
+  const kpis = props.kpis ?? store.kpis;
+  const latestDetection = props.latestDetection !== undefined ? props.latestDetection : store.latestDetection;
+  const privacyMaskEnabled = props.privacyMaskEnabled ?? store.privacyMaskEnabled ?? false;
+  const onNavigateToView = props.onNavigateToView ?? store.setCurrentView;
+  const currentCity = props.currentCity ?? store.currentCity;
+
+  const safeKpis: SystemKPIs = kpis || {
+    totalVehiclesToday: 0,
+    anprAccuracyPercent: 96.8,
+    activeAlertsCount: 0,
+    avgCityTravelTimeMin: 18,
+    congestionLevel: 'Moderate',
+    predictedCongestionRisk: 'Low',
+    predictedProbability: 25,
+  };
+
+  const safeSelectedCamera: CameraNode = selectedCamera || cameras[0] || {
+    id: 'CAM-NONE',
+    sectorId: 'SEC-NONE',
+    locationName: 'Surveillance Node',
+    lat: 17.43,
+    lng: 78.41,
+    status: 'offline' as const,
+    fps: 0,
+    totalDetectionsToday: 0,
+    headingDeg: 0,
+    ipAddress: '0.0.0.0',
+    model: 'YOLOv10-Edge',
+  };
+
   const cityConfig = currentCity && CITY_COORDINATES[currentCity]
     ? CITY_COORDINATES[currentCity]
     : { center: [17.4300, 78.4100] as [number, number], zoom: 13 };
@@ -62,7 +89,8 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
   const [isInspectOpen, setIsInspectOpen] = useState(false);
   const [alertSeverityFilter, setAlertSeverityFilter] = useState<'all' | 'critical' | 'medium'>('all');
 
-  const filteredAlerts = alerts.filter(a => {
+  const safeAlerts = alerts || [];
+  const filteredAlerts = safeAlerts.filter(a => {
     if (alertSeverityFilter === 'critical') return a.severity === 'critical';
     if (alertSeverityFilter === 'medium') return a.severity === 'medium';
     return true;
@@ -82,7 +110,7 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
           </div>
           <div className="mt-2 flex items-baseline justify-between">
             <span className="text-2xl font-black font-mono text-white tracking-tight">
-              {kpis.totalVehiclesToday.toLocaleString()}
+              {safeKpis.totalVehiclesToday.toLocaleString()}
             </span>
             <span className="text-[10px] font-mono font-bold text-emerald-400 flex items-center">
               <ArrowUpRight className="w-3 h-3" /> +12%
@@ -100,7 +128,7 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
           </div>
           <div className="mt-2 flex items-baseline justify-between">
             <span className="text-2xl font-black font-mono text-emerald-400 tracking-tight">
-              {kpis.anprAccuracyPercent}%
+              {safeKpis.anprAccuracyPercent}%
             </span>
             <span className="text-[10px] font-mono font-bold text-emerald-400 flex items-center">
               <ArrowUpRight className="w-3 h-3" /> Target Met
@@ -118,7 +146,7 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
           </div>
           <div className="mt-2 flex items-baseline justify-between">
             <span className="text-2xl font-black font-mono text-red-400 tracking-tight">
-              {kpis.activeAlertsCount}
+              {safeKpis.activeAlertsCount}
             </span>
             <span className="text-[10px] font-mono font-bold text-red-400 flex items-center">
               <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-ping mr-1"></span> Live Hotlist
@@ -136,7 +164,7 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
           </div>
           <div className="mt-2 flex items-baseline justify-between">
             <span className="text-2xl font-black font-mono text-white tracking-tight">
-              {kpis.avgCityTravelTimeMin} <span className="text-xs font-normal text-slate-400">min</span>
+              {safeKpis.avgCityTravelTimeMin} <span className="text-xs font-normal text-slate-400">min</span>
             </span>
             <span className="text-[10px] font-mono font-bold text-emerald-400 flex items-center">
               <ArrowDownRight className="w-3 h-3" /> -31% peak
@@ -154,7 +182,7 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
           </div>
           <div className="mt-2 flex items-baseline justify-between">
             <span className="text-xl font-bold font-mono text-amber-400 tracking-tight">
-              {kpis.congestionLevel}
+              {safeKpis.congestionLevel}
             </span>
             <span className="text-[10px] font-mono text-slate-400">Idx: 0.68</span>
           </div>
@@ -170,7 +198,7 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
           </div>
           <div className="mt-2 flex items-baseline justify-between">
             <span className="text-lg font-bold font-mono text-amber-400 tracking-tight">
-              {kpis.predictedProbability}% Risk
+              {safeKpis.predictedProbability}% Risk
             </span>
             <button 
               onClick={() => onNavigateToView('predictive')}
@@ -202,7 +230,7 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
           <div className="flex-1 mt-2 min-h-0 relative rounded-xl overflow-hidden">
             <CityMap
               cameras={cameras}
-              selectedCameraId={selectedCamera.id}
+              selectedCameraId={safeSelectedCamera.id}
               onSelectCamera={onSelectCamera}
               activeTrajectory={activeTrajectory}
               alerts={alerts}
@@ -223,9 +251,9 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
                   <Eye className="w-3.5 h-3.5" />
                 </div>
                 <div>
-                  <span className="font-mono font-bold text-white text-xs">{selectedCamera.id}</span>
+                  <span className="font-mono font-bold text-white text-xs">{safeSelectedCamera.id}</span>
                   <span className="text-[10px] text-slate-400 ml-1.5 font-mono truncate max-w-[120px] inline-block align-bottom">
-                    {selectedCamera.locationName}
+                    {safeSelectedCamera.locationName}
                   </span>
                 </div>
               </div>
@@ -255,7 +283,7 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
                 </div>
               ) : (
                 <CameraFeedCanvas
-                  camera={selectedCamera}
+                  camera={safeSelectedCamera}
                   latestDetection={latestDetection}
                   privacyMaskEnabled={privacyMaskEnabled}
                 />
@@ -269,7 +297,7 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
                 <span className="text-[10px] font-mono text-slate-600 italic">None</span>
               ) : (
                 cameras.map((cam) => {
-                  const isSelected = selectedCamera.id === cam.id;
+                  const isSelected = safeSelectedCamera.id === cam.id;
                   return (
                     <button
                       key={cam.id}
@@ -381,7 +409,7 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
 
       {/* Live Inspection Studio Modal */}
       <CameraInspectModal
-        camera={selectedCamera}
+        camera={safeSelectedCamera}
         isOpen={isInspectOpen}
         onClose={() => setIsInspectOpen(false)}
         latestDetection={latestDetection}

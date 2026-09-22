@@ -22,7 +22,7 @@ interface PredictiveIntelligenceViewProps {
   cameras: CameraNode[];
 }
 
-export const PredictiveIntelligenceView: React.FC<PredictiveIntelligenceViewProps> = ({ cameras }) => {
+export const PredictiveIntelligenceView: React.FC<PredictiveIntelligenceViewProps> = ({ cameras = [] }) => {
   const [selectedHorizon, setSelectedHorizon] = useState<number>(10);
   const [selectedSegmentId, setSelectedSegmentId] = useState<string>('SEG-NH44');
   const [approvalStatus, setApprovalStatus] = useState<Record<string, boolean>>({});

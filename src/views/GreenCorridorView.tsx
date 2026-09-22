@@ -26,7 +26,7 @@ interface GreenCorridorViewProps {
   cameras: CameraNode[];
 }
 
-export const GreenCorridorView: React.FC<GreenCorridorViewProps> = ({ cameras }) => {
+export const GreenCorridorView: React.FC<GreenCorridorViewProps> = ({ cameras = [] }) => {
   const [corridorsDict, setCorridorsDict] = useState<Record<string, GreenCorridorState>>({});
   const [selectedPreset, setSelectedPreset] = useState<string>('vja_hospital');
   const [loading, setLoading] = useState(true);

@@ -11,8 +11,8 @@ interface MobileViewProps {
 }
 
 export const MobileView: React.FC<MobileViewProps> = ({
-  cameras,
-  alerts,
+  cameras = [],
+  alerts = [],
   kpis,
   privacyMaskEnabled
 }) => {
@@ -30,20 +30,25 @@ export const MobileView: React.FC<MobileViewProps> = ({
             <div className="text-[10px] text-slate-400 font-mono">Smart City Traffic Officer Console</div>
           </div>
         </div>
-        <span className="px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-400 font-mono text-[10px] font-bold">
-          LIVE FIELD
-        </span>
+        <div className="flex items-center gap-1.5">
+          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+          <span className="text-[10px] font-mono text-emerald-400 font-bold">5G CONNECTED</span>
+        </div>
       </div>
 
-      {/* Quick Mobile KPI Row */}
-      <div className="grid grid-cols-2 gap-2 text-center text-xs font-mono">
-        <div className="bg-slate-900 border border-slate-800 p-2 rounded-xl">
-          <div className="text-slate-400 text-[10px]">Active Alerts</div>
-          <div className="text-lg font-bold text-red-400">{kpis.activeAlertsCount}</div>
+      {/* Quick Stats Strip */}
+      <div className="grid grid-cols-3 gap-2 text-center">
+        <div className="bg-slate-900/80 border border-slate-800 rounded-lg p-2">
+          <div className="text-[10px] text-slate-400 font-mono">Active Nodes</div>
+          <div className="text-lg font-bold text-cyan-400">{cameras.length}</div>
         </div>
-        <div className="bg-slate-900 border border-slate-800 p-2 rounded-xl">
-          <div className="text-slate-400 text-[10px]">ANPR Accuracy</div>
-          <div className="text-lg font-bold text-emerald-400">{kpis.anprAccuracyPercent}%</div>
+        <div className="bg-slate-900/80 border border-slate-800 rounded-lg p-2">
+          <div className="text-[10px] text-slate-400 font-mono">Hot Alerts</div>
+          <div className="text-lg font-bold text-red-400">{kpis?.activeAlertsCount ?? alerts.length}</div>
+        </div>
+        <div className="bg-slate-900/80 border border-slate-800 rounded-lg p-2">
+          <div className="text-[10px] text-slate-400 font-mono">ANPR Acc</div>
+          <div className="text-lg font-bold text-emerald-400">{kpis?.anprAccuracyPercent ?? 96.8}%</div>
         </div>
       </div>
 

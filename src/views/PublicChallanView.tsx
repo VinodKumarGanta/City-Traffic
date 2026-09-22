@@ -30,11 +30,12 @@ interface PublicChallanViewProps {
 }
 
 export const PublicChallanView: React.FC<PublicChallanViewProps> = ({
-  challans,
+  challans = [],
   onPayChallan,
   onDisputeChallan
 }) => {
-  const samplePlates = Array.from(new Set(challans.map(c => c.plateNumber.toUpperCase())));
+  const safeChallans = challans || [];
+  const samplePlates = Array.from(new Set(safeChallans.map(c => c.plateNumber?.toUpperCase() || ''))).filter(Boolean);
   const [searchPlate, setSearchPlate] = useState(samplePlates[0] || 'TS07JH4821');
   const [searchedQuery, setSearchedQuery] = useState(samplePlates[0] || 'TS07JH4821');
   const [selectedChallanForPay, setSelectedChallanForPay] = useState<EChallanRecord | null>(null);
