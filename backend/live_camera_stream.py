@@ -26,9 +26,16 @@ from psycopg2.extras import RealDictCursor
 from flask import Flask, Response, request, jsonify
 from dotenv import load_dotenv
 
-# Initialize Real Object & Human Cascades
+# Initialize Real Object & Human Cascades and Ultralytics YOLO
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 plate_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_russian_plate_number.xml')
+yolo_model = None
+try:
+    from ultralytics import YOLO
+    yolo_model = YOLO('yolov8n.pt')
+    print("[AI Vision] Ultralytics YOLOv8 loaded successfully.")
+except Exception as e:
+    print(f"[AI Vision] YOLOv8 load notice: {e}")
 
 # Load environment variables
 load_dotenv()
@@ -752,48 +759,119 @@ def ai_detect_frame():
             return jsonify({"error": "No valid image provided"}), 400
 
         h, w = img.shape[:2]
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(40, 40))
-        plates = plate_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=3, minSize=(40, 20))
-
         objects = []
-        is_human = len(faces) > 0
+        is_human = False
 
-        for (fx, fy, fw, fh) in faces:
-            pad_x = int(fw * 0.25)
-            pad_y = int(fh * 0.35)
-            bx = max(0, fx - pad_x)
-            by = max(0, fy - pad_y)
-            bw = min(w - bx, int(fw * 1.5))
-            bh = min(h - by, int(fh * 1.8))
-            objects.append({
-                "class": "person",
-                "label": "Person (Human)",
-                "is_human": True,
-                "is_vehicle": False,
-                "box": [int(bx), int(by), int(bw), int(bh)],
-                "confidence": 98.6,
-                "plate": None
-            })
+        FRIENDLY_LABELS = {
+            'person': 'Person (Human)',
+            'cell phone': 'Smartphone',
+            'laptop': 'Laptop Computer',
+            'bottle': 'Water Bottle',
+            'cup': 'Cup / Mug',
+            'chair': 'Chair',
+            'couch': 'Sofa / Couch',
+            'tv': 'Screen / Monitor',
+            'mouse': 'Computer Mouse',
+            'keyboard': 'Keyboard',
+            'book': 'Book',
+            'backpack': 'Backpack',
+            'handbag': 'Handbag',
+            'suitcase': 'Suitcase / Bag',
+            'remote': 'Remote Control',
+            'clock': 'Clock',
+            'car': 'Car',
+            'motorcycle': 'Motorcycle',
+            'bus': 'Bus',
+            'truck': 'Truck',
+            'bicycle': 'Bicycle',
+            'traffic light': 'Traffic Signal',
+            'stop sign': 'Stop Sign'
+        }
 
-        for (px, py, pw, ph) in plates:
-            objects.append({
-                "class": "plate",
-                "label": "Vehicle Plate",
-                "is_human": False,
-                "is_vehicle": True,
-                "box": [int(px), int(py), int(pw), int(ph)],
-                "confidence": 96.5,
-                "plate": "TS07JH4821"
-            })
+        # 1. Primary: Ultralytics YOLOv8 Deep Learning Object Detection
+        if yolo_model is not None:
+            try:
+                results = yolo_model.predict(img, conf=0.25, verbose=False)
+                if results and len(results) > 0:
+                    r = results[0]
+                    for idx, box in enumerate(r.boxes):
+                        cls_id = int(box.cls[0].item())
+                        cls_name = yolo_model.names.get(cls_id, f"obj_{cls_id}").lower()
+                        conf = round(float(box.conf[0].item()) * 100.0, 1)
+                        x1, y1, x2, y2 = box.xyxy[0].tolist()
+                        bx = max(0, int(x1))
+                        by = max(0, int(y1))
+                        bw = min(w - bx, int(x2 - x1))
+                        bh = min(h - by, int(y2 - y1))
+
+                        is_person = (cls_name == 'person')
+                        is_veh = cls_name in ['car', 'motorcycle', 'bus', 'truck', 'bicycle']
+                        if is_person:
+                            is_human = True
+
+                        label = FRIENDLY_LABELS.get(cls_name, cls_name.title())
+
+                        # Color tag hint for visualization:
+                        # Green for human, Cyan for smart devices / items, Amber/Red for vehicles
+                        if is_person:
+                            color = "#10b981"
+                        elif is_veh:
+                            color = "#f59e0b"
+                        elif cls_name in ['cell phone', 'laptop', 'tv', 'keyboard', 'mouse']:
+                            color = "#38bdf8"
+                        else:
+                            color = "#a855f7"
+
+                        objects.append({
+                            "id": f"TRK-{idx+1:02d}",
+                            "class": cls_name,
+                            "label": label,
+                            "is_human": is_person,
+                            "is_vehicle": is_veh,
+                            "box": [bx, by, bw, bh],
+                            "confidence": conf,
+                            "color": color,
+                            "plate": None
+                        })
+            except Exception as yerr:
+                print(f"[YOLO Inference Warning]: {yerr}")
+
+        # 2. Fallback to Haar Cascades if YOLO returned nothing or is not available
+        if len(objects) == 0:
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(40, 40))
+            if len(faces) > 0:
+                is_human = True
+                for idx, (fx, fy, fw, fh) in enumerate(faces):
+                    pad_x = int(fw * 0.25)
+                    pad_y = int(fh * 0.35)
+                    bx = max(0, fx - pad_x)
+                    by = max(0, fy - pad_y)
+                    bw = min(w - bx, int(fw * 1.5))
+                    bh = min(h - by, int(fh * 1.8))
+                    objects.append({
+                        "id": f"TRK-H{idx+1}",
+                        "class": "person",
+                        "label": "Person (Human)",
+                        "is_human": True,
+                        "is_vehicle": False,
+                        "box": [int(bx), int(by), int(bw), int(bh)],
+                        "confidence": 98.6,
+                        "color": "#10b981",
+                        "plate": None
+                    })
+
+        primary_label = "Person (Human)" if is_human else (objects[0]["label"] if len(objects) > 0 else "Dynamic Target")
 
         return jsonify({
             "detected": len(objects) > 0,
+            "count": len(objects),
             "is_human": is_human,
-            "primary_class": "person" if is_human else ("plate" if len(plates) > 0 else "object"),
-            "label": "Person (Human)" if is_human else ("Vehicle / Plate" if len(plates) > 0 else "Dynamic Object"),
-            "objects": objects
+            "primary_class": "person" if is_human else (objects[0]["class"] if len(objects) > 0 else "none"),
+            "label": primary_label,
+            "objects": objects,
+            "img_width": w,
+            "img_height": h
         })
     except Exception as err:
         return jsonify({"error": str(err)}), 500

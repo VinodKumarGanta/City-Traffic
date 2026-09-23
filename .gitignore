@@ -25,6 +25,7 @@ venv/
 .venv/
 ENV/
 .pytest_cache/
+*.pt
 
 # Editor directories and files
 .vscode/*
