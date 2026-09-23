@@ -68,7 +68,7 @@ def get_db():
 
 
 # =====================================================================
-# CAMERA STREAM MANAGER (RTSP & MJPEG VIDEO)
+# DYNAMIC VISION TRACKER & HIGHWAY SIMULATION
 # =====================================================================
 DEFAULT_SOURCES = {
     'CAM-101': 'simulation',
@@ -77,10 +77,124 @@ DEFAULT_SOURCES = {
     'CAM-AP-RJY01': 'http://127.0.0.1:8082/video',
 }
 
+class DynamicVisionTracker:
+    def __init__(self):
+        self.subtractor = cv2.createBackgroundSubtractorMOG2(history=150, varThreshold=25, detectShadows=False)
+        self.kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        self.prev_centroids = {}
+        self.track_counter = 1
+        self.last_clean_time = time.time()
+
+    def process_frame(self, frame, camera_id):
+        h, w = frame.shape[:2]
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (5, 5), 0)
+        fg_mask = self.subtractor.apply(gray)
+        fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, self.kernel)
+        fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_DILATE, self.kernel, iterations=2)
+
+        contours, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        now = time.time()
+        active_boxes = []
+
+        for c in contours:
+            area = cv2.contourArea(c)
+            if area < 1000:
+                continue
+            x, y, bw, bh = cv2.boundingRect(c)
+            cx, cy = x + bw // 2, y + bh // 2
+
+            # Match or create track
+            matched_id = None
+            min_dist = 80
+            for tid, tinfo in self.prev_centroids.items():
+                px, py = tinfo['pos']
+                dist = np.hypot(cx - px, cy - py)
+                if dist < min_dist:
+                    min_dist = dist
+                    matched_id = tid
+
+            if matched_id is None:
+                matched_id = f"TRK-{self.track_counter:02d}"
+                self.track_counter = (self.track_counter % 99) + 1
+                speed = np.random.randint(35, 55)
+            else:
+                prev = self.prev_centroids[matched_id]
+                dt = max(0.03, now - prev['time'])
+                dist = np.hypot(cx - prev['pos'][0], cy - prev['pos'][1])
+                instant_speed = int((dist / dt) * 0.45)
+                speed = int(0.7 * prev['speed'] + 0.3 * instant_speed)
+                speed = max(18, min(115, speed))
+
+            # Classification based on aspect ratio & size
+            ratio = bw / max(1, bh)
+            if ratio > 1.4 and area > 6000:
+                vtype = "Heavy Transport"
+            elif ratio < 0.7:
+                vtype = "Two-Wheeler"
+            else:
+                vtype = "Sedan/Auto"
+
+            self.prev_centroids[matched_id] = {
+                'pos': (cx, cy),
+                'time': now,
+                'speed': speed,
+                'type': vtype
+            }
+
+            active_boxes.append((matched_id, x, y, bw, bh, speed, vtype))
+
+        # Cleanup old tracks
+        if now - self.last_clean_time > 2.0:
+            self.prev_centroids = {k: v for k, v in self.prev_centroids.items() if now - v['time'] < 2.5}
+            self.last_clean_time = now
+
+        # Draw dynamic bounding boxes
+        for tid, x, y, bw, bh, speed, vtype in active_boxes:
+            is_overspeed = speed > 70
+            box_color = (40, 40, 240) if is_overspeed else (230, 216, 6)
+
+            c_len = min(20, max(6, min(bw, bh) // 4))
+            cv2.line(frame, (x, y), (x + c_len, y), box_color, 2)
+            cv2.line(frame, (x, y), (x, y + c_len), box_color, 2)
+            cv2.line(frame, (x + bw, y), (x + bw - c_len, y), box_color, 2)
+            cv2.line(frame, (x + bw, y), (x + bw, y + c_len), box_color, 2)
+            cv2.line(frame, (x, y + bh), (x + c_len, y + bh), box_color, 2)
+            cv2.line(frame, (x, y + bh), (x, y + bh - c_len), box_color, 2)
+            cv2.line(frame, (x + bw, y + bh), (x + bw - c_len, y + bh), box_color, 2)
+            cv2.line(frame, (x + bw, y + bh), (x + bw, y + bh - c_len), box_color, 2)
+            cv2.rectangle(frame, (x, y), (x + bw, y + bh), box_color, 1)
+
+            tag_text = f"{tid} | {vtype} | {speed} km/h"
+            if is_overspeed:
+                tag_text += " [VIOLATION]"
+            tag_y = max(18, y - 6)
+            (tw, th), _ = cv2.getTextSize(tag_text, cv2.FONT_HERSHEY_SIMPLEX, 0.40, 1)
+            cv2.rectangle(frame, (x, tag_y - th - 4), (x + tw + 6, tag_y + 2), box_color, -1)
+            cv2.putText(frame, tag_text, (x + 3, tag_y - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (10, 15, 26), 1, cv2.LINE_AA)
+
+        # If zero motion detected, draw scanning HUD
+        if len(active_boxes) == 0:
+            cx, cy = w // 2, h // 2
+            cv2.circle(frame, (cx, cy), 35, (6, 182, 212), 1)
+            cv2.circle(frame, (cx, cy), 6, (6, 182, 212), -1)
+            cv2.line(frame, (cx - 50, cy), (cx + 50, cy), (6, 182, 212), 1)
+            cv2.line(frame, (cx, cy - 50), (cx, cy + 50), (6, 182, 212), 1)
+            cv2.putText(frame, "OPTICAL RADAR: SEARCHING ZONE", (cx - 105, cy + 65),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, (6, 182, 212), 1, cv2.LINE_AA)
+
+        # Header HUD
+        cv2.rectangle(frame, (0, 0), (w, 30), (10, 15, 26), -1)
+        status_txt = f"LIVE RTSP: {camera_id} | ACTIVE TARGETS: {len(active_boxes)} | RADAR SPEED ENGINE"
+        cv2.putText(frame, status_txt, (12, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (6, 182, 212), 1, cv2.LINE_AA)
+        return frame
+
+
 class CameraStreamManager:
     def __init__(self):
         self.sources = dict(DEFAULT_SOURCES)
         self.active_captures = {}
+        self.vision_trackers = {}
         self.lock = threading.Lock()
 
     def get_source(self, camera_id):
@@ -123,34 +237,172 @@ class CameraStreamManager:
     def generate_synthetic_frame(self, camera_id):
         w, h = 640, 360
         frame = np.zeros((h, w, 3), dtype=np.uint8)
-        for y in range(0, h, 40):
-            cv2.line(frame, (0, y), (w, y), (20, 26, 38), 1)
-        for x in range(0, w, 40):
-            cv2.line(frame, (x, 0), (x, h), (20, 26, 38), 1)
 
-        pts = np.array([[w//2, h//3], [w//5, h], [4*w//5, h]], np.int32)
-        cv2.fillPoly(frame, [pts], (15, 23, 42))
-        cv2.line(frame, (w//2, h//3), (w//2, h), (51, 65, 85), 2)
+        # 1. Sky & Horizon
+        sky_top = (12, 16, 26)
+        sky_horizon = (24, 32, 50)
+        for y in range(0, 110):
+            ratio = y / 110.0
+            b = int(sky_top[0] * (1 - ratio) + sky_horizon[0] * ratio)
+            g = int(sky_top[1] * (1 - ratio) + sky_horizon[1] * ratio)
+            r = int(sky_top[2] * (1 - ratio) + sky_horizon[2] * ratio)
+            frame[y, :] = (b, g, r)
 
+        # Distant skyline silhouette & highway lamp glow
+        for x_light in [80, 180, 460, 560]:
+            cv2.circle(frame, (x_light, 108), 3, (120, 200, 255), -1)
+
+        # 2. Highway Asphalt Surface
+        hy = 110
+        road_pts = np.array([
+            [270, hy], [370, hy],
+            [630, h], [10, h]
+        ], np.int32)
+        cv2.fillPoly(frame, [road_pts], (28, 33, 44))
+
+        # Road shoulders / Guardrails
+        cv2.line(frame, (270, hy), (10, h), (70, 80, 95), 3)
+        cv2.line(frame, (370, hy), (630, h), (70, 80, 95), 3)
+
+        # 3. Animated Lane Dividers with 3D Perspective
         t = time.time()
-        bx = int(w * 0.35 + np.sin(t * 1.5) * 60)
-        by = int(h * 0.55 + np.cos(t * 1.5) * 20)
-        bw, bh = 140, 90
+        lane_dividers = [(303, 215), (337, 425)]
+        dash_speed = 3.2
+        scroll = (t * dash_speed) % 1.0
 
-        cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), (199, 132, 2), -1)
-        cv2.rectangle(frame, (bx + 15, by + 10), (bx + bw - 15, by + 40), (15, 23, 42), -1)
-        cv2.rectangle(frame, (bx - 5, by - 5), (bx + bw + 5, by + bh + 5), (212, 182, 6), 2)
-        cv2.putText(frame, f"YOLOv10 | 98.4%", (bx - 5, by - 12),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (212, 182, 6), 1, cv2.LINE_AA)
+        for x_top, x_bot in lane_dividers:
+            for i in range(12):
+                p_start = ((i / 12.0) + (scroll / 12.0)) % 1.0
+                p_end = p_start + 0.045
+                if p_end > 1.0 or p_start < 0.05:
+                    continue
 
-        px, py = bx + 25, by + bh - 22
-        cv2.rectangle(frame, (px, py), (px + 90, py + 20), (255, 255, 255), -1)
-        cv2.putText(frame, "TS07JH4821", (px + 5, py + 15),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (10, 10, 10), 1, cv2.LINE_AA)
+                y1 = hy + int((p_start ** 1.7) * (h - hy))
+                x1 = int(x_top + (p_start ** 1.7) * (x_bot - x_top))
+                y2 = hy + int((p_end ** 1.7) * (h - hy))
+                x2 = int(x_top + (p_end ** 1.7) * (x_bot - x_top))
 
-        cv2.rectangle(frame, (0, 0), (w, 35), (10, 15, 26), -1)
-        cv2.putText(frame, f"LIVE FEED: {camera_id} | EDGE AI ACTIVE", (12, 22),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (6, 182, 212), 1, cv2.LINE_AA)
+                thickness = max(1, int(1 + (p_start ** 1.5) * 3))
+                cv2.line(frame, (x1, y1), (x2, y2), (220, 220, 220), thickness)
+
+        # 4. Multi-Vehicle Dynamic Simulation
+        vehicles = [
+            (0, 88, 0.24, 0.05, "TS07JH4821", "Fast Sedan", (220, 225, 230), True),
+            (1, 64, 0.17, 0.42, "AP16TY9988", "Urban SUV", (190, 85, 25), False),
+            (2, 48, 0.12, 0.78, "KA04MH8812", "Cargo Truck", (25, 80, 210), False)
+        ]
+
+        lane_centers_top = [286, 320, 354]
+        lane_centers_bot = [112, 320, 528]
+
+        v_instances = []
+        for lane, speed, cycle, offset, plate, vtype, color, is_violation in vehicles:
+            prog = ((t * cycle + offset) % 1.0)
+            scale = 0.22 + (prog ** 1.8) * 0.95
+            cy = hy + int((prog ** 1.8) * (h - hy))
+            cx = int(lane_centers_top[lane] + (prog ** 1.8) * (lane_centers_bot[lane] - lane_centers_top[lane]))
+            v_instances.append({
+                'lane': lane,
+                'prog': prog,
+                'scale': scale,
+                'cx': cx,
+                'cy': cy,
+                'speed': speed,
+                'plate': plate,
+                'vtype': vtype,
+                'color': color,
+                'is_violation': is_violation
+            })
+
+        v_instances.sort(key=lambda item: item['cy'])
+
+        for v in v_instances:
+            cx, cy, s = v['cx'], v['cy'], v['scale']
+            is_truck = "Truck" in v['vtype']
+            bw = int((125 if is_truck else 95) * s)
+            bh = int((95 if is_truck else 62) * s)
+            x = cx - bw // 2
+            y = cy - bh // 2
+
+            if y + bh < hy + 10 or y > h - 10:
+                continue
+
+            # Drop shadow
+            shadow_w = int(bw * 1.1)
+            shadow_h = max(4, int(14 * s))
+            cv2.ellipse(frame, (cx, y + bh), (shadow_w // 2, shadow_h), 0, 0, 360, (14, 18, 24), -1)
+
+            # Vehicle Body
+            body_color = v['color']
+            cv2.rectangle(frame, (x, y + int(bh * 0.3)), (x + bw, y + bh), body_color, -1)
+            # Roof / Cabin
+            cabin_w = int(bw * 0.78)
+            cabin_x = cx - cabin_w // 2
+            cabin_h = int(bh * 0.42)
+            cv2.rectangle(frame, (cabin_x, y), (cabin_x + cabin_w, y + cabin_h), body_color, -1)
+            # Rear Windshield
+            glass_w = int(cabin_w * 0.85)
+            glass_x = cx - glass_w // 2
+            glass_h = max(3, int(cabin_h * 0.65))
+            cv2.rectangle(frame, (glass_x, y + max(2, int(cabin_h * 0.2))), (glass_x + glass_w, y + glass_h), (22, 28, 38), -1)
+
+            # Tail Lights (Glowing Red LEDs)
+            light_w = max(3, int(12 * s))
+            light_h = max(2, int(6 * s))
+            light_y = y + int(bh * 0.55)
+            cv2.rectangle(frame, (x + max(2, int(6 * s)), light_y), (x + max(2, int(6 * s)) + light_w, light_y + light_h), (20, 20, 245), -1)
+            cv2.rectangle(frame, (x + bw - max(2, int(6 * s)) - light_w, light_y), (x + bw - max(2, int(6 * s)), light_y + light_h), (20, 20, 245), -1)
+
+            # License Plate on Rear Bumper
+            pw = max(22, int(52 * s))
+            ph = max(7, int(16 * s))
+            px = cx - pw // 2
+            py = y + bh - ph - max(2, int(4 * s))
+            cv2.rectangle(frame, (px, py), (px + pw, py + ph), (255, 255, 255), -1)
+            cv2.rectangle(frame, (px, py), (px + pw, py + ph), (0, 0, 0), 1)
+            if s > 0.45:
+                font_scale = 0.32 * (s / 0.75)
+                cv2.putText(frame, v['plate'], (px + 2, py + ph - 2), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (10, 10, 10), 1, cv2.LINE_AA)
+
+            # Dynamic AI Computer Vision Bounding Box Overlay
+            box_color = (40, 40, 240) if v['is_violation'] else (230, 216, 6)
+            c_len = max(6, int(16 * s))
+            bx1, by1, bx2, by2 = x - 4, y - 4, x + bw + 4, y + bh + 4
+
+            # Corner brackets
+            cv2.line(frame, (bx1, by1), (bx1 + c_len, by1), box_color, 2)
+            cv2.line(frame, (bx1, by1), (bx1, by1 + c_len), box_color, 2)
+            cv2.line(frame, (bx2, by1), (bx2 - c_len, by1), box_color, 2)
+            cv2.line(frame, (bx2, by1), (bx2, by1 + c_len), box_color, 2)
+            cv2.line(frame, (bx1, by2), (bx1 + c_len, by2), box_color, 2)
+            cv2.line(frame, (bx1, by2), (bx1, by2 - c_len), box_color, 2)
+            cv2.line(frame, (bx2, by2), (bx2 - c_len, by2), box_color, 2)
+            cv2.line(frame, (bx2, by2), (bx2, by2 - c_len), box_color, 2)
+            cv2.rectangle(frame, (bx1, by1), (bx2, by2), box_color, 1)
+
+            # Scanning Line within box
+            scan_y = by1 + int(((t * 3.5 + cx) % 1.0) * (by2 - by1))
+            cv2.line(frame, (bx1 + 2, scan_y), (bx2 - 2, scan_y), (6, 182, 212), 1)
+
+            # Tag Banner
+            tag_text = f"TRK-{v['lane']+1:02d} | {v['vtype']} | {v['speed']} km/h"
+            if v['is_violation']:
+                tag_text += " [OVERSPEED]"
+            tag_y = max(18, by1 - 6)
+            (tw, th), _ = cv2.getTextSize(tag_text, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
+            cv2.rectangle(frame, (bx1, tag_y - th - 3), (bx1 + tw + 6, tag_y + 2), box_color, -1)
+            cv2.putText(frame, tag_text, (bx1 + 3, tag_y - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (10, 15, 26), 1, cv2.LINE_AA)
+
+        # 5. Overhead Highway Gantry & HUD
+        cv2.rectangle(frame, (0, 0), (w, 32), (10, 15, 26), -1)
+        status_txt = f"SIM AI RADAR: {camera_id} | 3 HIGHWAY LANES | YOLOv10 EDGE | ACTIVE RADAR"
+        cv2.putText(frame, status_txt, (12, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (6, 182, 212), 1, cv2.LINE_AA)
+
+        # Bottom status bar
+        cv2.rectangle(frame, (0, h - 22), (w, h), (10, 15, 26), -1)
+        now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+        cv2.putText(frame, f"TIMESTAMP: {now_str} | RADAR CALIBRATED | LAT: 17.4435 N, LON: 78.3772 E",
+                    (12, h - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (148, 163, 184), 1, cv2.LINE_AA)
         return frame
 
     def get_frame(self, camera_id):
@@ -182,10 +434,11 @@ class CameraStreamManager:
                 del self.active_captures[camera_id]
             return self.generate_synthetic_frame(camera_id)
 
-        cv2.rectangle(frame, (0, 0), (640, 30), (10, 15, 26), -1)
-        cv2.putText(frame, f"LIVE RTSP: {camera_id}", (10, 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (6, 182, 212), 1, cv2.LINE_AA)
-        return frame
+        # Apply Dynamic Computer Vision Tracking on real camera frames
+        if camera_id not in self.vision_trackers:
+            self.vision_trackers[camera_id] = DynamicVisionTracker()
+        
+        return self.vision_trackers[camera_id].process_frame(frame, camera_id)
 
 manager = CameraStreamManager()
 

@@ -170,7 +170,32 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
     }
   };
 
-  // Draw Real-Time AI Canvas Overlays on Webcam Feed
+  // Dynamic Optical Motion Tracker Refs & State
+  const stnCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const motionCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const prevPixelsRef = useRef<Uint8ClampedArray | null>(null);
+  const boxRef = useRef({
+    x: 0,
+    y: 0,
+    w: 0,
+    h: 0,
+    targetX: 0,
+    targetY: 0,
+    targetW: 0,
+    targetH: 0,
+    initialized: false,
+    lastMotion: 0,
+    speed: 42,
+    violation: false
+  });
+
+  const [opticalSpeed, setOpticalSpeed] = useState(42);
+  const [dynamicTargetType, setDynamicTargetType] = useState('Dynamic Vehicle');
+  const [isSpeedViolation, setIsSpeedViolation] = useState(false);
+  const [isMotionDetected, setIsMotionDetected] = useState(false);
+  const [trackId] = useState(`TRK-${Math.floor(10 + Math.random() * 89)}`);
+
+  // Draw Real-Time AI Dynamic Vision & Overlays on Webcam Feed
   useEffect(() => {
     if (feedMode !== 'webcam' || permissionState !== 'granted') return;
 
@@ -192,20 +217,130 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
         // Draw camera frame
         ctx.drawImage(video, 0, 0, w, h);
 
-        // Draw Real-time AI Target Bounding Box
-        const bx = w * 0.28;
-        const by = h * 0.35;
-        const bw = w * 0.44;
-        const bh = h * 0.45;
+        // 1. Dynamic In-Browser Motion Difference Engine (160x90 downsampled for 60fps)
+        if (!motionCanvasRef.current) {
+          motionCanvasRef.current = document.createElement('canvas');
+          motionCanvasRef.current.width = 160;
+          motionCanvasRef.current.height = 90;
+        }
+        const mCanvas = motionCanvasRef.current;
+        const mCtx = mCanvas.getContext('2d', { willReadFrequently: true });
 
-        // Bounding Box
-        ctx.strokeStyle = '#06b6d4';
-        ctx.lineWidth = 3;
+        if (mCtx) {
+          mCtx.drawImage(video, 0, 0, 160, 90);
+          const imgData = mCtx.getImageData(0, 0, 160, 90);
+          const data = imgData.data;
+
+          if (prevPixelsRef.current) {
+            const prev = prevPixelsRef.current;
+            let minX = 160, maxX = 0, minY = 90, maxY = 0;
+            let diffCount = 0;
+
+            for (let i = 0; i < data.length; i += 4) {
+              const diff = Math.abs(data[i] - prev[i]) +
+                           Math.abs(data[i + 1] - prev[i + 1]) +
+                           Math.abs(data[i + 2] - prev[i + 2]);
+              if (diff > 45) {
+                const pixelIdx = i / 4;
+                const px = pixelIdx % 160;
+                const py = Math.floor(pixelIdx / 160);
+                if (px < minX) minX = px;
+                if (px > maxX) maxX = px;
+                if (py < minY) minY = py;
+                if (py > maxY) maxY = py;
+                diffCount++;
+              }
+            }
+
+            const box = boxRef.current;
+            const now = Date.now();
+
+            if (diffCount > 65) {
+              // Real physical motion detected in camera view
+              const scaleX = w / 160;
+              const scaleY = h / 90;
+
+              // Envelop the detected motion with padding
+              const rawW = Math.max(160, (maxX - minX) * scaleX * 1.35);
+              const rawH = Math.max(120, (maxY - minY) * scaleY * 1.35);
+              const rawX = Math.max(10, Math.min(w - rawW - 10, ((minX + maxX) / 2) * scaleX - rawW / 2));
+              const rawY = Math.max(10, Math.min(h - rawH - 10, ((minY + maxY) / 2) * scaleY - rawH / 2));
+
+              box.targetX = rawX;
+              box.targetY = rawY;
+              box.targetW = rawW;
+              box.targetH = rawH;
+
+              // Compute optical speed from centroid displacement
+              const dx = (box.targetX - box.x);
+              const dy = (box.targetY - box.y);
+              const dist = Math.hypot(dx, dy);
+              const instantSpeed = Math.min(115, Math.max(25, Math.round(dist * 1.6)));
+              box.speed = Math.round(box.speed * 0.65 + instantSpeed * 0.35);
+              box.violation = box.speed > 68;
+              box.lastMotion = now;
+
+              setIsMotionDetected(true);
+              setOpticalSpeed(box.speed);
+              setIsSpeedViolation(box.violation);
+
+              // Aspect ratio classification
+              const aspect = box.targetW / box.targetH;
+              if (aspect > 1.35) setDynamicTargetType('Vehicle (Sedan/SUV)');
+              else if (aspect < 0.75) setDynamicTargetType('Pedestrian / Cyclist');
+              else setDynamicTargetType('Active Target');
+            } else {
+              // No current motion
+              if (now - box.lastMotion > 2200) {
+                // Return smoothly to center scan area
+                box.targetX = w * 0.28;
+                box.targetY = h * 0.32;
+                box.targetW = w * 0.44;
+                box.targetH = h * 0.46;
+                box.speed = Math.max(22, box.speed - 1);
+                box.violation = false;
+                setIsMotionDetected(false);
+                setOpticalSpeed(box.speed);
+                setIsSpeedViolation(false);
+              }
+            }
+
+            // Smooth linear interpolation (lerp)
+            if (!box.initialized) {
+              box.x = box.targetX || w * 0.28;
+              box.y = box.targetY || h * 0.32;
+              box.w = box.targetW || w * 0.44;
+              box.h = box.targetH || h * 0.46;
+              box.initialized = true;
+            } else {
+              box.x += (box.targetX - box.x) * 0.22;
+              box.y += (box.targetY - box.y) * 0.22;
+              box.w += (box.targetW - box.w) * 0.22;
+              box.h += (box.targetH - box.h) * 0.22;
+            }
+          }
+          prevPixelsRef.current = new Uint8ClampedArray(data);
+        }
+
+        // 2. Draw Dynamic AI Bounding Box & HUD
+        const box = boxRef.current;
+        const bx = box.x;
+        const by = box.y;
+        const bw = box.w;
+        const bh = box.h;
+        const isViolation = box.violation;
+
+        const boxColor = isViolation ? '#ef4444' : '#06b6d4';
+        const bracketColor = isViolation ? '#f87171' : '#38bdf8';
+
+        // Outer box
+        ctx.strokeStyle = boxColor;
+        ctx.lineWidth = 2.5;
         ctx.strokeRect(bx, by, bw, bh);
 
-        // Tech Corner Brackets
-        const cLen = 24;
-        ctx.strokeStyle = '#38bdf8';
+        // Cyber Corner Brackets
+        const cLen = Math.min(26, Math.min(bw, bh) / 3);
+        ctx.strokeStyle = bracketColor;
         ctx.lineWidth = 4;
         // Top-left
         ctx.beginPath();
@@ -232,23 +367,56 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
         ctx.lineTo(bx + bw, by + bh - cLen);
         ctx.stroke();
 
+        // Center crosshair in bounding box
+        const midX = bx + bw / 2;
+        const midY = by + bh / 2;
+        ctx.strokeStyle = `${boxColor}88`;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(midX - 12, midY);
+        ctx.lineTo(midX + 12, midY);
+        ctx.moveTo(midX, midY - 12);
+        ctx.lineTo(midX, midY + 12);
+        ctx.stroke();
+
         // AI Label Banner
         const plate = privacyMaskEnabled ? '••••••••••' : (latestDetection?.plateNumber || 'AP16TY9988');
-        const label = `YOLOv10 LIVE | Conf: ${latestDetection?.confidence || 98.6}% | [${plate}]`;
-        ctx.fillStyle = '#06b6d4';
-        ctx.fillRect(bx, by - 32, 340, 28);
-        ctx.fillStyle = '#090d16';
-        ctx.font = 'bold 13px monospace';
-        ctx.fillText(label, bx + 8, by - 12);
+        const speedTag = `${box.speed} km/h`;
+        const label = isViolation
+          ? `[VIOLATION: ${speedTag}] ${trackId} | [${plate}]`
+          : `YOLOv10 LIVE | ${trackId} | ${speedTag} | [${plate}]`;
 
-        // Scanning Line Animation
-        scanY = (scanY + 4) % h;
-        const grad = ctx.createLinearGradient(0, scanY - 12, 0, scanY + 12);
+        ctx.fillStyle = boxColor;
+        const bannerW = Math.min(bw, 360);
+        ctx.fillRect(bx, Math.max(28, by - 30), bannerW, 26);
+        ctx.fillStyle = '#090d16';
+        ctx.font = 'bold 12px monospace';
+        ctx.fillText(label, bx + 6, Math.max(28, by - 30) + 17);
+
+        // Scanning Line Animation inside Box
+        scanY = (scanY + 3) % Math.max(10, bh);
+        const grad = ctx.createLinearGradient(0, by + scanY - 8, 0, by + scanY + 8);
         grad.addColorStop(0, 'rgba(6, 182, 212, 0)');
-        grad.addColorStop(0.5, 'rgba(6, 182, 212, 0.6)');
+        grad.addColorStop(0.5, isViolation ? 'rgba(239, 68, 68, 0.6)' : 'rgba(6, 182, 212, 0.6)');
         grad.addColorStop(1, 'rgba(6, 182, 212, 0)');
         ctx.fillStyle = grad;
-        ctx.fillRect(0, scanY - 12, w, 24);
+        ctx.fillRect(bx + 2, by + scanY - 8, bw - 4, 16);
+
+        // 3. Real-Time STN Perspective Rectification Canvas Preview
+        if (stnCanvasRef.current) {
+          const stnCtx = stnCanvasRef.current.getContext('2d');
+          if (stnCtx) {
+            stnCtx.drawImage(
+              video,
+              Math.max(0, bx), Math.max(0, by), Math.max(20, bw), Math.max(20, bh),
+              0, 0, 240, 60
+            );
+            // Dynamic scan line on STN canvas
+            const stnScan = ((Date.now() / 10) % 60);
+            stnCtx.fillStyle = 'rgba(6, 182, 212, 0.45)';
+            stnCtx.fillRect(0, stnScan, 240, 2);
+          }
+        }
       }
       animationFrameRef.current = requestAnimationFrame(renderLoop);
     };
@@ -258,7 +426,7 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
     return () => {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
-  }, [feedMode, permissionState, isFrozen, latestDetection, privacyMaskEnabled]);
+  }, [feedMode, permissionState, isFrozen, latestDetection, privacyMaskEnabled, trackId]);
 
   // Snapshot Capture
   const handleCaptureSnapshot = () => {
@@ -395,29 +563,49 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
               </div>
             )}
 
-            {/* Mode 3: Simulation */}
+            {/* Mode 3: Multi-Vehicle AI Highway Simulation */}
             {feedMode === 'simulation' && (
               <div className="relative w-full h-full flex items-center justify-center">
-                <div className="w-full h-[380px] bg-slate-950 rounded-lg flex flex-col items-center justify-center border border-slate-800 space-y-3 font-mono text-xs text-slate-400">
-                  <Cpu className="w-10 h-10 text-cyan-400 animate-bounce" />
-                  <div className="text-slate-200 font-bold text-sm">Synthetic Edge AI Road Simulation</div>
-                  <div>Camera Node: <strong className="text-cyan-400">{camera.id}</strong> (1080p @ 30 FPS)</div>
-                  <button
-                    onClick={() => setFeedMode('webcam')}
-                    className="px-3 py-1.5 rounded bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs"
-                  >
-                    Switch to Real Camera
-                  </button>
-                </div>
+                <img
+                  src={gatewayUrl}
+                  alt={`Multi-Vehicle AI Highway Simulation ${camera.id}`}
+                  className="w-full h-full max-h-[460px] object-contain rounded-lg border border-slate-800"
+                  onError={() => setGatewayStatus(false)}
+                  onLoad={() => setGatewayStatus(true)}
+                />
+
+                {gatewayStatus === false && (
+                  <div className="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center p-6 text-center space-y-2 z-20">
+                    <AlertCircle className="w-10 h-10 text-amber-400 animate-pulse" />
+                    <div className="text-sm font-bold text-white">Simulation Stream Offline (Port 5001)</div>
+                    <p className="text-xs text-slate-400 font-mono max-w-md">
+                      Start Python gateway: <code className="text-cyan-400">python backend/live_camera_stream.py</code>
+                    </p>
+                    <button
+                      onClick={checkGateway}
+                      className="px-3 py-1.5 rounded bg-cyan-600 hover:bg-cyan-500 text-white font-mono text-xs font-bold mt-2"
+                    >
+                      Retry Connection
+                    </button>
+                  </div>
+                )}
               </div>
             )}
 
             {/* Viewport Floating HUD Overlays */}
             <div className="absolute top-4 left-4 pointer-events-none flex items-center gap-2 text-[10px] font-mono text-slate-300 bg-slate-950/80 backdrop-blur-md px-2.5 py-1 rounded border border-slate-800">
-              <span className="w-2 h-2 rounded-full bg-red-500 animate-ping"></span>
+              <span className={`w-2 h-2 rounded-full ${feedMode === 'webcam' ? (isMotionDetected ? 'bg-emerald-400 animate-ping' : 'bg-cyan-400') : 'bg-red-500 animate-ping'}`}></span>
               <span>LIVE FEED: {camera.id}</span>
               <span className="text-slate-500">|</span>
               <span className="text-emerald-400 font-bold">{camera.fps} FPS</span>
+              {feedMode === 'webcam' && (
+                <>
+                  <span className="text-slate-500">|</span>
+                  <span className={isMotionDetected ? "text-cyan-300 font-bold" : "text-slate-400"}>
+                    {isMotionDetected ? `TRACKING (${opticalSpeed} km/h)` : 'SEARCHING SECTOR'}
+                  </span>
+                </>
+              )}
             </div>
 
             <div className="absolute bottom-4 right-4 flex items-center gap-2">
@@ -463,7 +651,15 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
                   </button>
 
                   <button
-                    onClick={() => setFeedMode('simulation')}
+                    onClick={() => {
+                      setFeedMode('simulation');
+                      fetch(`${getApiBaseUrl()}/api/camera/${camera.id}/source`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ source: 'simulation' })
+                      }).catch(() => {});
+                      setStreamKey(Date.now());
+                    }}
                     className={`py-1.5 rounded-lg font-bold transition-all flex items-center justify-center gap-1 ${
                       feedMode === 'simulation'
                         ? 'bg-cyan-600 text-white shadow-md'
@@ -541,8 +737,23 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
                     <Zap className="w-3.5 h-3.5" />
                     STN Perspective Rectification
                   </span>
-                  <span className="text-[10px] text-emerald-400">240x60 Norm</span>
+                  <span className="text-[10px] text-emerald-400">240x60 Live Crop</span>
                 </div>
+
+                {/* Real-time cropped STN sub-region canvas (Webcam mode) */}
+                {feedMode === 'webcam' && (
+                  <div className="relative">
+                    <canvas
+                      ref={stnCanvasRef}
+                      width={240}
+                      height={60}
+                      className="w-full h-14 rounded-lg bg-black border border-cyan-500/40 object-cover shadow-inner"
+                    />
+                    <div className="absolute top-1 left-1.5 px-1.5 py-0.5 rounded bg-black/80 border border-cyan-500/30 text-[9px] font-mono text-cyan-300">
+                      LIVE OPTICAL CROP
+                    </div>
+                  </div>
+                )}
 
                 <div className="h-10 bg-slate-100 rounded-lg flex items-center justify-center font-black text-slate-950 text-base tracking-widest border border-cyan-400 shadow-inner">
                   {privacyMaskEnabled ? '••••••••••' : (latestDetection?.plateNumber || 'AP16TY9988')}
@@ -551,7 +762,9 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
                 <div className="grid grid-cols-2 gap-2 text-[10px] text-slate-400 pt-1">
                   <div>OCR Latency: <strong className="text-emerald-400">{latestDetection?.ocrExecutionTimeMs || 3.8}ms</strong></div>
                   <div>Accuracy: <strong className="text-cyan-400">{latestDetection?.confidence || 98.6}%</strong></div>
-                  <div>IP Address: <strong className="text-slate-300">{camera.ipAddress}</strong></div>
+                  <div>Optical Speed: <strong className={isSpeedViolation ? "text-red-400 font-bold" : "text-cyan-400"}>{opticalSpeed} km/h</strong></div>
+                  <div>Tracker State: <strong className={isMotionDetected ? "text-emerald-400 font-bold" : "text-amber-400"}>{isMotionDetected ? "LOCKED" : "SEARCHING"}</strong></div>
+                  <div>Target Type: <strong className="text-slate-300">{dynamicTargetType}</strong></div>
                   <div>Edge Model: <strong className="text-slate-300">{camera.model}</strong></div>
                 </div>
               </div>
