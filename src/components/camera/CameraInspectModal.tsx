@@ -389,6 +389,7 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
           ctx.textAlign = 'left';
         } else {
           // Draw every tracked object concurrently with its own distinct bounding box
+          const renderedBanners: Array<{ x: number; y: number; w: number; h: number }> = [];
           items.forEach(item => {
             // Smooth lerp interpolation (0.28)
             item.x += (item.targetX - item.x) * 0.28;
@@ -477,9 +478,23 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
             }
 
             ctx.font = 'bold 11px monospace';
-            const textW = ctx.measureText(labelText).width + 12;
+            const textW = ctx.measureText(labelText).width + 14;
             const bannerW = Math.max(bw, Math.min(textW, 360));
-            const bannerY = Math.max(26, by - 24);
+
+            // Smart placement: above box if space permits, else inside top of box
+            let bannerY = by > 32 ? (by - 24) : (by + 4);
+
+            // Collision avoidance with other active banners
+            for (const prev of renderedBanners) {
+              if (
+                Math.abs(bannerY - prev.y) < 22 &&
+                bx < prev.x + prev.w &&
+                bx + bannerW > prev.x
+              ) {
+                bannerY = prev.y + 24;
+              }
+            }
+            renderedBanners.push({ x: bx, y: bannerY, w: bannerW, h: 22 });
 
             ctx.fillStyle = boxColor;
             ctx.fillRect(bx, bannerY, bannerW, 22);

@@ -24,10 +24,6 @@ import {
   MapPin,
   Crosshair,
   RotateCcw,
-  ChevronUp,
-  ChevronDown,
-  ChevronLeft,
-  ChevronRight,
   Plus,
   Minus,
   Target
@@ -129,24 +125,31 @@ interface CityMapProps {
   zoom?: number;
 }
 
-// Map Auto Recenter & Gesture Controller (Prevents Rubber-Banding during mouse pan)
-const MapController: React.FC<{
+// Map Auto Recenter, Smooth Drag & Dynamic Mouse Movement Controller
+const MapMouseMoveController: React.FC<{
   targetCenter: [number, number];
   targetZoom: number;
   onCoordinatesChange: (lat: number, lng: number, zoom: number) => void;
   onUserMovedMap?: (center: [number, number], zoom: number) => void;
-}> = ({ targetCenter, targetZoom, onCoordinatesChange, onUserMovedMap }) => {
+  edgeGlideEnabled: boolean;
+}> = ({ targetCenter, targetZoom, onCoordinatesChange, onUserMovedMap, edgeGlideEnabled }) => {
   const map = useMap();
+  const isUserDraggingRef = useRef(false);
   const lastTargetKeyRef = useRef<string>('');
+  const animFrameRef = useRef<number | null>(null);
+  const mousePosRef = useRef<{ x: number; y: number } | null>(null);
+  const containerRectRef = useRef<DOMRect | null>(null);
 
+  // Recenter / flyTo ONLY when preset/targetCenter changes from outside (not from user drag)
   useEffect(() => {
     const key = `${targetCenter[0].toFixed(4)},${targetCenter[1].toFixed(4)},${targetZoom}`;
-    if (lastTargetKeyRef.current !== key) {
+    if (lastTargetKeyRef.current !== key && !isUserDraggingRef.current) {
       lastTargetKeyRef.current = key;
-      map.flyTo(targetCenter, targetZoom, { duration: 1.2 });
+      map.flyTo(targetCenter, targetZoom, { duration: 1.0 });
     }
   }, [targetCenter, targetZoom, map]);
 
+  // Leaflet map mouse events
   useMapEvents({
     mousemove(e) {
       onCoordinatesChange(
@@ -155,7 +158,11 @@ const MapController: React.FC<{
         map.getZoom()
       );
     },
+    dragstart() {
+      isUserDraggingRef.current = true;
+    },
     dragend() {
+      isUserDraggingRef.current = false;
       const c = map.getCenter();
       const z = map.getZoom();
       const key = `${c.lat.toFixed(4)},${c.lng.toFixed(4)},${z}`;
@@ -173,89 +180,145 @@ const MapController: React.FC<{
     }
   });
 
+  // Dynamic Mouse Movement Edge Gliding (Map moves smoothly with mouse cursor)
+  useEffect(() => {
+    const container = map.getContainer();
+    if (!container) return;
+
+    const onContainerMouseMove = (e: MouseEvent) => {
+      containerRectRef.current = container.getBoundingClientRect();
+      mousePosRef.current = {
+        x: e.clientX - containerRectRef.current.left,
+        y: e.clientY - containerRectRef.current.top
+      };
+    };
+
+    const onContainerMouseLeave = () => {
+      mousePosRef.current = null;
+    };
+
+    container.addEventListener('mousemove', onContainerMouseMove);
+    container.addEventListener('mouseleave', onContainerMouseLeave);
+
+    // Continuous Edge-Glide Loop
+    const edgeMargin = 40; // px threshold from viewport edge
+    const maxSpeed = 12;   // px per frame for smooth cinematic gliding
+
+    const edgeGlideLoop = () => {
+      if (edgeGlideEnabled && mousePosRef.current && containerRectRef.current && !isUserDraggingRef.current) {
+        const { x, y } = mousePosRef.current;
+        const width = containerRectRef.current.width;
+        const height = containerRectRef.current.height;
+
+        let panX = 0;
+        let panY = 0;
+
+        // Left / Right edge gliding
+        if (x < edgeMargin && x >= 0) {
+          panX = -maxSpeed * Math.pow(1 - x / edgeMargin, 1.4);
+        } else if (x > width - edgeMargin && x <= width) {
+          panX = maxSpeed * Math.pow(1 - (width - x) / edgeMargin, 1.4);
+        }
+
+        // Top / Bottom edge gliding
+        if (y < edgeMargin && y >= 0) {
+          panY = -maxSpeed * Math.pow(1 - y / edgeMargin, 1.4);
+        } else if (y > height - edgeMargin && y <= height) {
+          panY = maxSpeed * Math.pow(1 - (height - y) / edgeMargin, 1.4);
+        }
+
+        if (panX !== 0 || panY !== 0) {
+          map.panBy([panX, panY], { animate: false });
+        }
+      }
+      animFrameRef.current = requestAnimationFrame(edgeGlideLoop);
+    };
+
+    animFrameRef.current = requestAnimationFrame(edgeGlideLoop);
+
+    return () => {
+      container.removeEventListener('mousemove', onContainerMouseMove);
+      container.removeEventListener('mouseleave', onContainerMouseLeave);
+      if (animFrameRef.current) {
+        cancelAnimationFrame(animFrameRef.current);
+      }
+    };
+  }, [map, edgeGlideEnabled]);
+
   return null;
 };
 
-// 4-Way Directional Mouse Pan & Zoom Widget (Rosette for Upside-Down & Left-Right Panning)
-const MapNavigationPanWidget: React.FC<{
+// Sleek Professional GIS Floating Controls (Replaces Childish Joystick)
+const MapControlsWidget: React.FC<{
   onRecenter: () => void;
-}> = ({ onRecenter }) => {
+  edgeGlideEnabled: boolean;
+  onToggleEdgeGlide: () => void;
+  onToggleFullscreen?: () => void;
+  isFullscreen?: boolean;
+}> = ({ onRecenter, edgeGlideEnabled, onToggleEdgeGlide, onToggleFullscreen, isFullscreen }) => {
   const map = useMap();
 
-  const handlePan = (dx: number, dy: number) => {
-    map.panBy([dx, dy], { animate: true, duration: 0.25 });
-  };
-
   return (
-    <div className="absolute bottom-12 right-3 z-[1000] pointer-events-auto select-none flex flex-col items-center gap-1.5 animate-in fade-in">
-      {/* 4-way Directional D-Pad */}
-      <div className="bg-slate-900/95 backdrop-blur-md border border-cyan-500/30 rounded-2xl p-1.5 shadow-2xl flex flex-col items-center gap-1">
-        <button
-          type="button"
-          onClick={() => handlePan(0, -140)}
-          className="w-7 h-7 rounded-lg bg-slate-800/90 hover:bg-cyan-600 text-slate-300 hover:text-white flex items-center justify-center transition-all hover:scale-110 active:scale-90 shadow border border-slate-700/80 hover:border-cyan-400"
-          title="Pan North (Move Map Up / Upside Down)"
-        >
-          <ChevronUp className="w-4 h-4" />
-        </button>
-
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={() => handlePan(-140, 0)}
-            className="w-7 h-7 rounded-lg bg-slate-800/90 hover:bg-cyan-600 text-slate-300 hover:text-white flex items-center justify-center transition-all hover:scale-110 active:scale-90 shadow border border-slate-700/80 hover:border-cyan-400"
-            title="Pan West (Move Map Left / Left-Right)"
-          >
-            <ChevronLeft className="w-4 h-4" />
-          </button>
-
-          <button
-            type="button"
-            onClick={onRecenter}
-            className="w-7 h-7 rounded-lg bg-cyan-950 border border-cyan-500/60 hover:bg-cyan-600 text-cyan-300 hover:text-white flex items-center justify-center transition-all hover:scale-110 active:scale-90 shadow"
-            title="Recenter Map to Grid Center"
-          >
-            <Target className="w-3.5 h-3.5" />
-          </button>
-
-          <button
-            type="button"
-            onClick={() => handlePan(140, 0)}
-            className="w-7 h-7 rounded-lg bg-slate-800/90 hover:bg-cyan-600 text-slate-300 hover:text-white flex items-center justify-center transition-all hover:scale-110 active:scale-90 shadow border border-slate-700/80 hover:border-cyan-400"
-            title="Pan East (Move Map Right / Left-Right)"
-          >
-            <ChevronRight className="w-4 h-4" />
-          </button>
-        </div>
-
-        <button
-          type="button"
-          onClick={() => handlePan(0, 140)}
-          className="w-7 h-7 rounded-lg bg-slate-800/90 hover:bg-cyan-600 text-slate-300 hover:text-white flex items-center justify-center transition-all hover:scale-110 active:scale-90 shadow border border-slate-700/80 hover:border-cyan-400"
-          title="Pan South (Move Map Down / Upside Down)"
-        >
-          <ChevronDown className="w-4 h-4" />
-        </button>
-      </div>
-
-      {/* Zoom In & Zoom Out Buttons */}
-      <div className="bg-slate-900/95 backdrop-blur-md border border-slate-700/80 rounded-xl p-1 shadow-2xl flex flex-col items-center gap-1">
+    <div className="absolute bottom-12 right-3 z-[1000] pointer-events-auto select-none flex flex-col items-center gap-2 animate-in fade-in">
+      {/* Sleek Glassmorphism Control Pillar */}
+      <div className="bg-slate-900/90 backdrop-blur-md border border-slate-700/80 hover:border-cyan-500/50 rounded-2xl p-1.5 shadow-2xl flex flex-col items-center gap-1.5 transition-all">
+        {/* Zoom In */}
         <button
           type="button"
           onClick={() => map.zoomIn()}
-          className="w-7 h-7 rounded-lg bg-slate-800/90 hover:bg-cyan-600 text-slate-300 hover:text-white flex items-center justify-center font-bold transition-all hover:scale-110 active:scale-90 shadow border border-slate-700/80 hover:border-cyan-400"
+          className="w-8 h-8 rounded-xl bg-slate-800/80 hover:bg-cyan-600 text-slate-200 hover:text-white flex items-center justify-center transition-all hover:scale-105 active:scale-95 shadow border border-slate-700/60 hover:border-cyan-400 group relative"
           title="Zoom In (+)"
         >
           <Plus className="w-4 h-4" />
         </button>
+
+        {/* Zoom Out */}
         <button
           type="button"
           onClick={() => map.zoomOut()}
-          className="w-7 h-7 rounded-lg bg-slate-800/90 hover:bg-cyan-600 text-slate-300 hover:text-white flex items-center justify-center font-bold transition-all hover:scale-110 active:scale-90 shadow border border-slate-700/80 hover:border-cyan-400"
+          className="w-8 h-8 rounded-xl bg-slate-800/80 hover:bg-cyan-600 text-slate-200 hover:text-white flex items-center justify-center transition-all hover:scale-105 active:scale-95 shadow border border-slate-700/60 hover:border-cyan-400 group relative"
           title="Zoom Out (-)"
         >
           <Minus className="w-4 h-4" />
         </button>
+
+        <div className="w-5 h-[1px] bg-slate-700/80 my-0.5" />
+
+        {/* Recenter */}
+        <button
+          type="button"
+          onClick={onRecenter}
+          className="w-8 h-8 rounded-xl bg-cyan-950/80 hover:bg-cyan-600 text-cyan-300 hover:text-white flex items-center justify-center transition-all hover:scale-105 active:scale-95 shadow border border-cyan-500/50 group relative"
+          title="Recenter Map View"
+        >
+          <Target className="w-4 h-4" />
+        </button>
+
+        {/* Edge-Pan / Mouse-Glide Mode Toggle */}
+        <button
+          type="button"
+          onClick={onToggleEdgeGlide}
+          className={`w-8 h-8 rounded-xl flex items-center justify-center transition-all hover:scale-105 active:scale-95 shadow border group relative ${
+            edgeGlideEnabled
+              ? 'bg-emerald-950/80 border-emerald-500/60 text-emerald-400 hover:bg-emerald-600 hover:text-white'
+              : 'bg-slate-800/80 border-slate-700/60 text-slate-400 hover:bg-slate-700 hover:text-slate-200'
+          }`}
+          title={edgeGlideEnabled ? 'Mouse Glide Mode Active (Move mouse to edges to glide)' : 'Mouse Glide Mode Off (Click & drag to pan)'}
+        >
+          <Compass className={`w-4 h-4 ${edgeGlideEnabled ? 'animate-spin-slow' : ''}`} />
+        </button>
+
+        {/* Fullscreen */}
+        {onToggleFullscreen && (
+          <button
+            type="button"
+            onClick={onToggleFullscreen}
+            className="w-8 h-8 rounded-xl bg-slate-800/80 hover:bg-cyan-600 text-slate-200 hover:text-white flex items-center justify-center transition-all hover:scale-105 active:scale-95 shadow border border-slate-700/60 hover:border-cyan-400"
+            title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen Map'}
+          >
+            {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -344,6 +407,7 @@ export const CityMap: React.FC<CityMapProps> = ({
   const [showAlerts, setShowAlerts] = useState(true);
   const [showHeatmap, setShowHeatmap] = useState(initialShowHeatmap);
   const [showTrajectory, setShowTrajectory] = useState(true);
+  const [edgeGlideEnabled, setEdgeGlideEnabled] = useState(true);
 
   // Custom coordinate input state
   const [showCoordDialog, setShowCoordDialog] = useState(false);
@@ -655,8 +719,8 @@ export const CityMap: React.FC<CityMapProps> = ({
         <div>
           Zoom: <span className="text-cyan-400 font-bold">{hoverCoords.zoom}x</span>
         </div>
-        <div className="hidden sm:inline text-emerald-400 text-[10px] px-1.5 py-0.2 rounded bg-emerald-500/10 border border-emerald-500/20">
-          No Billing Key Needed
+        <div className="hidden sm:inline text-cyan-400 text-[10px] px-1.5 py-0.2 rounded bg-cyan-500/10 border border-cyan-500/20">
+          Mouse Glide Active
         </div>
       </div>
 
@@ -673,9 +737,10 @@ export const CityMap: React.FC<CityMapProps> = ({
         zoomControl={false}
         className="w-full h-full flex-1 cursor-grab active:cursor-grabbing min-h-[460px]"
       >
-        <MapController
+        <MapMouseMoveController
           targetCenter={mapCenter}
           targetZoom={mapZoom}
+          edgeGlideEnabled={edgeGlideEnabled}
           onCoordinatesChange={(lat, lng, zoom) => setHoverCoords({ lat, lng, zoom })}
           onUserMovedMap={(newCenter, newZoom) => {
             setMapCenter(newCenter);
@@ -683,12 +748,16 @@ export const CityMap: React.FC<CityMapProps> = ({
           }}
         />
 
-        {/* Dedicated 4-Way Directional Mouse Pan (Upside-Down / Left-Right) & Zoom Pad */}
-        <MapNavigationPanWidget
+        {/* Sleek Professional GIS Controls (Replaces Childish Joystick) */}
+        <MapControlsWidget
           onRecenter={() => {
             setMapCenter(initialCenter);
             setMapZoom(initialZoom);
           }}
+          edgeGlideEnabled={edgeGlideEnabled}
+          onToggleEdgeGlide={() => setEdgeGlideEnabled(!edgeGlideEnabled)}
+          onToggleFullscreen={toggleFullscreen}
+          isFullscreen={isFullscreen}
         />
 
         {/* Dynamic Free Open GIS Basemap Tile Layer */}

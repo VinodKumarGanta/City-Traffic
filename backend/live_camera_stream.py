@@ -762,77 +762,90 @@ def ai_detect_frame():
         objects = []
         is_human = False
 
-        FRIENDLY_LABELS = {
-            'person': 'Person (Human)',
-            'cell phone': 'Smartphone',
-            'laptop': 'Laptop Computer',
-            'bottle': 'Water Bottle',
-            'cup': 'Cup / Mug',
-            'chair': 'Chair',
-            'couch': 'Sofa / Couch',
-            'tv': 'Screen / Monitor',
-            'mouse': 'Computer Mouse',
-            'keyboard': 'Keyboard',
-            'book': 'Book',
-            'backpack': 'Backpack',
-            'handbag': 'Handbag',
-            'suitcase': 'Suitcase / Bag',
-            'remote': 'Remote Control',
-            'clock': 'Clock',
-            'car': 'Car',
-            'motorcycle': 'Motorcycle',
-            'bus': 'Bus',
-            'truck': 'Truck',
-            'bicycle': 'Bicycle',
-            'traffic light': 'Traffic Signal',
-            'stop sign': 'Stop Sign'
+        # Curated Surveillance & Traffic Detection Classes:
+        # (friendly_label, is_human, is_vehicle, color_hex, min_conf_percent)
+        VALID_DETECTION_CLASSES = {
+            'person': ('Person (Human)', True, False, '#10b981', 38.0),
+            'cell phone': ('Smartphone', False, False, '#06b6d4', 42.0),
+            'laptop': ('Laptop Computer', False, False, '#06b6d4', 42.0),
+            'bottle': ('Water Bottle', False, False, '#38bdf8', 40.0),
+            'cup': ('Cup / Drink', False, False, '#38bdf8', 40.0),
+            'chair': ('Chair', False, False, '#a855f7', 40.0),
+            'backpack': ('Backpack', False, False, '#a855f7', 42.0),
+            'handbag': ('Handbag', False, False, '#a855f7', 42.0),
+            'book': ('Book', False, False, '#a855f7', 42.0),
+            'umbrella': ('Umbrella', False, False, '#a855f7', 42.0),
+            'mouse': ('Computer Mouse', False, False, '#06b6d4', 42.0),
+            'keyboard': ('Keyboard', False, False, '#06b6d4', 42.0),
+            'tv': ('Monitor / Screen', False, False, '#06b6d4', 42.0),
+            'car': ('Car', False, True, '#f59e0b', 40.0),
+            'motorcycle': ('Motorcycle', False, True, '#f59e0b', 40.0),
+            'bus': ('Bus', False, True, '#f59e0b', 40.0),
+            'truck': ('Truck', False, True, '#f59e0b', 40.0),
+            'bicycle': ('Bicycle', False, True, '#f59e0b', 40.0),
+            'traffic light': ('Traffic Signal', False, False, '#fbbf24', 45.0),
+            'stop sign': ('Stop Sign', False, False, '#ef4444', 45.0)
         }
 
         # 1. Primary: Ultralytics YOLOv8 Deep Learning Object Detection
         if yolo_model is not None:
             try:
-                results = yolo_model.predict(img, conf=0.25, verbose=False)
+                results = yolo_model.predict(img, conf=0.36, verbose=False)
                 if results and len(results) > 0:
                     r = results[0]
-                    for idx, box in enumerate(r.boxes):
+                    human_boxes = []
+                    raw_candidates = []
+
+                    for box in r.boxes:
                         cls_id = int(box.cls[0].item())
                         cls_name = yolo_model.names.get(cls_id, f"obj_{cls_id}").lower()
                         conf = round(float(box.conf[0].item()) * 100.0, 1)
+
+                        # Filter out absurd/irrelevant false positives (e.g. toilet on shirt collar)
+                        if cls_name not in VALID_DETECTION_CLASSES:
+                            continue
+
+                        meta = VALID_DETECTION_CLASSES[cls_name]
+                        min_conf = meta[4]
+                        if conf < min_conf:
+                            continue
+
                         x1, y1, x2, y2 = box.xyxy[0].tolist()
                         bx = max(0, int(x1))
                         by = max(0, int(y1))
                         bw = min(w - bx, int(x2 - x1))
                         bh = min(h - by, int(y2 - y1))
 
-                        is_person = (cls_name == 'person')
-                        is_veh = cls_name in ['car', 'motorcycle', 'bus', 'truck', 'bicycle']
-                        if is_person:
+                        if meta[1]:  # is_human
                             is_human = True
+                            human_boxes.append((bx, by, bw, bh))
 
-                        label = FRIENDLY_LABELS.get(cls_name, cls_name.title())
-
-                        # Color tag hint for visualization:
-                        # Green for human, Cyan for smart devices / items, Amber/Red for vehicles
-                        if is_person:
-                            color = "#10b981"
-                        elif is_veh:
-                            color = "#f59e0b"
-                        elif cls_name in ['cell phone', 'laptop', 'tv', 'keyboard', 'mouse']:
-                            color = "#38bdf8"
-                        else:
-                            color = "#a855f7"
-
-                        objects.append({
-                            "id": f"TRK-{idx+1:02d}",
+                        raw_candidates.append({
                             "class": cls_name,
-                            "label": label,
-                            "is_human": is_person,
-                            "is_vehicle": is_veh,
+                            "label": meta[0],
+                            "is_human": meta[1],
+                            "is_vehicle": meta[2],
                             "box": [bx, by, bw, bh],
                             "confidence": conf,
-                            "color": color,
+                            "color": meta[3],
                             "plate": None
                         })
+
+                    # Filter out spurious items that fall completely inside a person's chest
+                    for item in raw_candidates:
+                        if not item["is_human"] and not item["is_vehicle"] and item["class"] in ['chair', 'tv']:
+                            bx, by, bw, bh = item["box"]
+                            cx, cy = bx + bw // 2, by + bh // 2
+                            inside_human = False
+                            for (hx, hy, hw, hh) in human_boxes:
+                                if hx <= cx <= hx + hw and hy <= cy <= hy + hh:
+                                    inside_human = True
+                                    break
+                            if inside_human:
+                                continue
+
+                        item["id"] = f"TRK-{len(objects) + 1:02d}"
+                        objects.append(item)
             except Exception as yerr:
                 print(f"[YOLO Inference Warning]: {yerr}")
 
