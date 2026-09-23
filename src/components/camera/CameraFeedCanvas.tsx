@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { CameraNode, ANPRDetection } from '../../types/traffic';
 import { Zap, Radio, Settings, RefreshCw, CheckCircle2, AlertCircle } from 'lucide-react';
-import { getApiBaseUrl } from '../../services/apiConfig';
+import { getApiBaseUrl, getCachedGatewayStatus } from '../../services/apiConfig';
 
 interface CameraFeedCanvasProps {
   camera: CameraNode;
@@ -9,13 +9,12 @@ interface CameraFeedCanvasProps {
   privacyMaskEnabled?: boolean;
 }
 
-export const CameraFeedCanvas: React.FC<CameraFeedCanvasProps> = ({
+export const CameraFeedCanvasComponent: React.FC<CameraFeedCanvasProps> = ({
   camera,
   latestDetection,
   privacyMaskEnabled = false,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [scanPos, setScanPos] = useState(0);
 
   // Stream Mode: 'simulation' | 'rtsp_gateway'
   const [streamMode, setStreamMode] = useState<'simulation' | 'rtsp_gateway'>('simulation');
@@ -27,19 +26,16 @@ export const CameraFeedCanvas: React.FC<CameraFeedCanvasProps> = ({
 
   const gatewayStreamUrl = `${getApiBaseUrl()}/video_feed/${camera.id}?t=${streamKey}`;
 
-  // Check Gateway Status
+  // Check Gateway Status via Global Cached Promise (prevents network flooding)
   const checkGatewayHealth = async () => {
     try {
-      const res = await fetch(`${getApiBaseUrl()}/api/status`, { method: 'GET' });
-      if (res.ok) {
-        const data = await res.json();
-        setGatewayOnline(true);
+      const status = await getCachedGatewayStatus(12000);
+      setGatewayOnline(status.online);
+      if (status.online) {
         setStreamMode(prev => (prev === 'simulation' ? 'rtsp_gateway' : prev));
-        if (data.sources && data.sources[camera.id]) {
-          setRtspInput(data.sources[camera.id]);
+        if (status.sources && status.sources[camera.id]) {
+          setRtspInput(status.sources[camera.id]);
         }
-      } else {
-        setGatewayOnline(false);
       }
     } catch {
       setGatewayOnline(false);
@@ -48,7 +44,7 @@ export const CameraFeedCanvas: React.FC<CameraFeedCanvasProps> = ({
 
   useEffect(() => {
     checkGatewayHealth();
-    const interval = setInterval(checkGatewayHealth, 8000);
+    const interval = setInterval(checkGatewayHealth, 16000);
     return () => clearInterval(interval);
   }, [camera.id]);
 
@@ -75,14 +71,6 @@ export const CameraFeedCanvas: React.FC<CameraFeedCanvasProps> = ({
       setIsSavingSource(false);
     }
   };
-
-  // Animated scanning line
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setScanPos(prev => (prev + 2) % 100);
-    }, 30);
-    return () => clearInterval(interval);
-  }, []);
 
   // Draw simulated video feed & bounding box onto HTML5 canvas
   useEffect(() => {
@@ -188,17 +176,7 @@ export const CameraFeedCanvas: React.FC<CameraFeedCanvasProps> = ({
     ctx.textAlign = 'left';
     const label = `${latestDetection?.vehicleType || 'Sedan'} | ${latestDetection?.confidence || 98.7}% [${plateText}]`;
     ctx.fillText(label, bx - 1, by - 12);
-
-    // Draw Scanning Line
-    const scanY = (scanPos / 100) * height;
-    const scanGrad = ctx.createLinearGradient(0, scanY - 10, 0, scanY + 10);
-    scanGrad.addColorStop(0, 'rgba(6, 182, 212, 0)');
-    scanGrad.addColorStop(0.5, 'rgba(6, 182, 212, 0.6)');
-    scanGrad.addColorStop(1, 'rgba(6, 182, 212, 0)');
-    ctx.fillStyle = scanGrad;
-    ctx.fillRect(0, scanY - 10, width, 20);
-
-  }, [camera, latestDetection, privacyMaskEnabled, scanPos, streamMode]);
+  }, [camera.id, latestDetection, privacyMaskEnabled, streamMode]);
 
   return (
     <div className="relative w-full h-full rounded-xl overflow-hidden border border-slate-800 bg-slate-950 flex flex-col">
@@ -291,12 +269,18 @@ export const CameraFeedCanvas: React.FC<CameraFeedCanvasProps> = ({
             )}
           </div>
         ) : (
-          <canvas
-            ref={canvasRef}
-            width={640}
-            height={360}
-            className="w-full h-full object-cover"
-          />
+          <div className="relative w-full h-full flex items-center justify-center">
+            <canvas
+              ref={canvasRef}
+              width={640}
+              height={360}
+              className="w-full h-full object-cover"
+            />
+            {/* High-speed hardware-accelerated GPU scanline (0 CPU / 0 React re-renders) */}
+            <div className="absolute inset-0 pointer-events-none overflow-hidden">
+              <div className="w-full h-1 bg-gradient-to-r from-transparent via-cyan-400 to-transparent shadow-[0_0_15px_rgba(6,182,212,0.9)] animate-scanline-sweep" />
+            </div>
+          </div>
         )}
 
         {/* RTSP Source Config Modal */}
@@ -389,3 +373,5 @@ export const CameraFeedCanvas: React.FC<CameraFeedCanvasProps> = ({
     </div>
   );
 };
+
+export const CameraFeedCanvas = React.memo(CameraFeedCanvasComponent);

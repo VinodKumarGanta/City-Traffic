@@ -890,6 +890,37 @@ def ai_detect_frame():
         return jsonify({"error": str(err)}), 500
 
 
+# =====================================================================
+# QUANTUM TRAFFIC INTELLIGENCE & OPTIMIZATION REST API
+# =====================================================================
+try:
+    from quantum_traffic_engine import quantum_traffic_engine
+except ImportError:
+    import sys
+    sys.path.append(os.path.dirname(__file__))
+    from quantum_traffic_engine import quantum_traffic_engine
+
+@app.route('/api/quantum/status', methods=['GET'])
+def get_quantum_status():
+    """Returns simulated 128-qubit QPU coprocessor diagnostics."""
+    return jsonify(quantum_traffic_engine.get_status())
+
+@app.route('/api/quantum/optimize_signals', methods=['POST'])
+def optimize_corridor_quantum():
+    """Executes QAOA / QUBO Simulated Quantum Annealing for corridor signal timing."""
+    data = request.get_json(silent=True) or {}
+    corridor_id = data.get("corridorId", "CORR-VJA-01")
+    intersections = data.get("intersections", [])
+    result = quantum_traffic_engine.optimize_corridor_signals(corridor_id, intersections)
+    return jsonify(result)
+
+@app.route('/api/quantum/predict', methods=['POST'])
+def predict_quantum():
+    """Executes Variational Quantum Classifier (VQC) Hilbert space inference."""
+    data = request.get_json(silent=True) or {}
+    result = quantum_traffic_engine.predict_congestion_qml(data)
+    return jsonify(result)
+
 
 # 1. System Health & Aggregated KPIs
 @app.route('/api/db/status', methods=['GET'])

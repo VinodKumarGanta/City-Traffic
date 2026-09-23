@@ -12,12 +12,14 @@ import {
   Compass,
   Receipt,
   Siren,
+  Atom,
 } from 'lucide-react';
 
 export type ViewId =
   | 'overview'
   | 'anpr'
   | 'predictive'
+  | 'quantum'
   | 'cameras'
   | 'analytics'
   | 'alerts'
@@ -51,6 +53,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'overview', label: 'Overview', icon: LayoutDashboard },
     { id: 'anpr', label: 'ANPR', icon: Search },
     { id: 'predictive', label: 'Forecasts', icon: TrendingUp },
+    { id: 'quantum', label: 'Quantum QIO', icon: Atom },
     { id: 'cameras', label: 'Cameras', icon: Video },
     { id: 'analytics', label: 'Analytics', icon: BarChart3 },
     { id: 'alerts', label: 'Alerts', icon: Bell, alert: activeAlertsCount > 0 },

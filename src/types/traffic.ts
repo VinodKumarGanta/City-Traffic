@@ -203,3 +203,68 @@ export interface CorridorRoadInfo {
   congestionPercent: number;
   activeIncidents: number;
 }
+
+export interface QuantumQpuStatus {
+  qpu_name: string;
+  architecture: string;
+  logical_qubits_active: number;
+  gate_fidelity_percent: number;
+  two_qubit_cz_fidelity: number;
+  t1_relaxation_us: number;
+  t2_dephasing_us: number;
+  quantum_volume: number;
+  coprocessor_state: string;
+  readout_error_rate: number;
+  quantum_speedup_factor: string;
+}
+
+export interface QuantumOptimizationNode {
+  intersectionId: string;
+  name: string;
+  qubitAssigned: string;
+  groundStateSpin: number;
+  classicalGreenSec: number;
+  quantumGreenSec: number;
+  greenWaveOffsetSec: number;
+  classicalDelaySec: number;
+  quantumDelaySec: number;
+  delayReductionPercent: number;
+  phaseStatus: string;
+}
+
+export interface QuantumOptimizationResult {
+  corridorId: string;
+  algorithm: string;
+  hamiltonianType: string;
+  qpuQubitsUtilized: number;
+  groundStateEnergy: number;
+  convergenceSteps: number;
+  energyHistory: number[];
+  tunnelingHistory: number[];
+  nodes: QuantumOptimizationNode[];
+  summary: {
+    classicalAvgDelaySec: number;
+    quantumAvgDelaySec: number;
+    latencyImprovementPercent: number;
+    greenWaveBandwidthPercent: number;
+    estimatedFuelSavedLitersPerHour: number;
+    co2EmissionReductionKgPerHour: number;
+  };
+}
+
+export interface QuantumPredictionResult {
+  algorithm: string;
+  hilbertSpaceDimensions: number;
+  blochSphere: {
+    polarAngleThetaRad: number;
+    azimuthalAnglePhiRad: number;
+    zExpectationValue: number;
+    stateFidelityPercent: number;
+  };
+  quantumCongestionProbability: number;
+  quantumRiskLevel: 'LOW' | 'MODERATE' | 'HIGH' | 'CRITICAL';
+  quantumConfidencePercent: number;
+  classicalBaselineAccuracy: number;
+  quantumAccuracyBoostPercent: number;
+  quantumRecommendation: string;
+}

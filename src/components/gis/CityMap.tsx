@@ -149,14 +149,20 @@ const MapMouseMoveController: React.FC<{
     }
   }, [targetCenter, targetZoom, map]);
 
+  const lastCoordUpdateTimeRef = useRef(0);
+
   // Leaflet map mouse events
   useMapEvents({
     mousemove(e) {
-      onCoordinatesChange(
-        Number(e.latlng.lat.toFixed(5)),
-        Number(e.latlng.lng.toFixed(5)),
-        map.getZoom()
-      );
+      const now = Date.now();
+      if (now - lastCoordUpdateTimeRef.current > 120) {
+        lastCoordUpdateTimeRef.current = now;
+        onCoordinatesChange(
+          Number(e.latlng.lat.toFixed(5)),
+          Number(e.latlng.lng.toFixed(5)),
+          map.getZoom()
+        );
+      }
     },
     dragstart() {
       isUserDraggingRef.current = true;

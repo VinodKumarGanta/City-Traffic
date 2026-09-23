@@ -73,7 +73,7 @@ interface TrafficStoreValue {
 const TrafficStoreContext = createContext<TrafficStoreValue | null>(null);
 
 const VALID_VIEWS: ViewId[] = [
-  'overview', 'anpr', 'predictive', 'cameras', 'analytics', 
+  'overview', 'anpr', 'predictive', 'quantum', 'cameras', 'analytics', 
   'alerts', 'reports', 'settings', 'mobile', 'citizen', 
   'challan', 'greencorridor'
 ];
