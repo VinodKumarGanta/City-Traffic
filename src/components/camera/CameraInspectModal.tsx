@@ -201,6 +201,16 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
   const isRequestingAiRef = useRef(false);
   const radarAngleRef = useRef(0);
 
+  const latestDetectionRef = useRef(latestDetection);
+  useEffect(() => {
+    latestDetectionRef.current = latestDetection;
+  }, [latestDetection]);
+
+  const privacyMaskRef = useRef(privacyMaskEnabled);
+  useEffect(() => {
+    privacyMaskRef.current = privacyMaskEnabled;
+  }, [privacyMaskEnabled]);
+
   const [opticalSpeed, setOpticalSpeed] = useState(3);
   const [dynamicTargetType, setDynamicTargetType] = useState('Person (Human)');
   const [isSpeedViolation, setIsSpeedViolation] = useState(false);
@@ -238,14 +248,19 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
 
           if (!snapCanvasRef.current) {
             snapCanvasRef.current = document.createElement('canvas');
-            snapCanvasRef.current.width = 480;
-            snapCanvasRef.current.height = 270;
           }
           const sCanvas = snapCanvasRef.current;
+          const vw = video.videoWidth || 640;
+          const vh = video.videoHeight || 480;
+          const snapW = 480;
+          const snapH = Math.round((snapW * vh) / vw);
+          sCanvas.width = snapW;
+          sCanvas.height = snapH;
+
           const sCtx = sCanvas.getContext('2d');
           if (sCtx) {
-            sCtx.drawImage(video, 0, 0, 480, 270);
-            const dataUrl = sCanvas.toDataURL('image/jpeg', 0.65);
+            sCtx.drawImage(video, 0, 0, snapW, snapH);
+            const dataUrl = sCanvas.toDataURL('image/jpeg', 0.70);
             fetch(`${getApiBaseUrl()}/api/ai/detect_frame`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -256,33 +271,56 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
                 if (res && res.objects && Array.isArray(res.objects)) {
                   const map = trackedObjectsRef.current;
                   const currTime = Date.now();
-                  const scaleX = w / (res.img_width || 480);
-                  const scaleY = h / (res.img_height || 270);
+                  const scaleX = w / (res.img_width || snapW);
+                  const scaleY = h / (res.img_height || snapH);
 
-                  res.objects.forEach((obj: any, idx: number) => {
-                    const objId = obj.id || `TRK-${idx + 1}`;
+                  const matchedExistingKeys = new Set<string>();
+
+                  res.objects.forEach((obj: any) => {
                     const tx = obj.box[0] * scaleX;
                     const ty = obj.box[1] * scaleY;
                     const tw = obj.box[2] * scaleX;
                     const th = obj.box[3] * scaleY;
+                    const tcx = tx + tw / 2;
+                    const tcy = ty + th / 2;
 
-                    if (map.has(objId)) {
-                      const ex = map.get(objId)!;
+                    // Spatial centroid matching with existing tracks of the same class
+                    let bestKey: string | null = null;
+                    let bestDist = 240;
+
+                    for (const [key, existing] of map.entries()) {
+                      if (matchedExistingKeys.has(key)) continue;
+                      if (existing.class === obj.class) {
+                        const ecx = existing.targetX + existing.targetW / 2;
+                        const ecy = existing.targetY + existing.targetH / 2;
+                        const dist = Math.hypot(tcx - ecx, tcy - ecy);
+                        if (dist < bestDist) {
+                          bestDist = dist;
+                          bestKey = key;
+                        }
+                      }
+                    }
+
+                    if (bestKey && map.has(bestKey)) {
+                      matchedExistingKeys.add(bestKey);
+                      const ex = map.get(bestKey)!;
                       ex.targetX = tx;
                       ex.targetY = ty;
                       ex.targetW = tw;
                       ex.targetH = th;
                       ex.confidence = obj.confidence;
                       ex.label = obj.label;
-                      ex.class = obj.class;
                       ex.color = obj.color;
                       ex.is_human = obj.is_human;
                       ex.is_vehicle = obj.is_vehicle;
                       ex.plate = obj.plate;
                       ex.lastSeen = currTime;
                     } else {
-                      map.set(objId, {
-                        id: objId,
+                      const prefix = obj.is_human ? 'HUM' : obj.class.toUpperCase().slice(0, 3);
+                      const newId = `TRK-${prefix}-${Math.floor(10 + Math.random() * 89)}`;
+                      matchedExistingKeys.add(newId);
+                      map.set(newId, {
+                        id: newId,
                         class: obj.class,
                         label: obj.label,
                         is_human: obj.is_human,
@@ -307,9 +345,9 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
                     }
                   });
 
-                  // Cull stale objects not seen in > 1500ms
+                  // Cull stale objects not seen in > 1400ms
                   for (const [key, item] of map.entries()) {
-                    if (currTime - item.lastSeen > 1500) {
+                    if (currTime - item.lastSeen > 1400) {
                       map.delete(key);
                     }
                   }
@@ -321,7 +359,7 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
                   setIsHumanSubject(hasHuman);
                   setIsMotionDetected(currentItems.length > 0);
                   if (currentItems.length > 0) {
-                    const primary = currentItems[0];
+                    const primary = currentItems.find(i => i.is_human) || currentItems[0];
                     setDynamicTargetType(primary.label);
                     setAiClassLabel(primary.label);
                     setOpticalSpeed(primary.speed || (hasHuman ? 3 : 40));
@@ -391,11 +429,11 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
           // Draw every tracked object concurrently with its own distinct bounding box
           const renderedBanners: Array<{ x: number; y: number; w: number; h: number }> = [];
           items.forEach(item => {
-            // Smooth lerp interpolation (0.28)
-            item.x += (item.targetX - item.x) * 0.28;
-            item.y += (item.targetY - item.y) * 0.28;
-            item.w += (item.targetW - item.w) * 0.28;
-            item.h += (item.targetH - item.h) * 0.28;
+            // Smooth lerp interpolation (0.35)
+            item.x += (item.targetX - item.x) * 0.35;
+            item.y += (item.targetY - item.y) * 0.35;
+            item.w += (item.targetW - item.w) * 0.35;
+            item.h += (item.targetH - item.h) * 0.35;
 
             const bx = Math.max(10, Math.min(w - 20, item.x));
             const by = Math.max(10, Math.min(h - 20, item.y));
@@ -468,7 +506,7 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
             if (isHuman) {
               labelText = `YOLO LIVE | ${item.id} | ${item.label} | ${item.confidence}% | ${item.speed} km/h`;
             } else if (isVeh) {
-              const plate = privacyMaskEnabled ? '••••••••••' : (latestDetection?.plateNumber || item.plate || 'TS07JH4821');
+              const plate = privacyMaskRef.current ? '••••••••••' : (latestDetectionRef.current?.plateNumber || item.plate || 'TS07JH4821');
               labelText = isViolation
                 ? `[OVERSPEED: ${item.speed} km/h] ${item.id} | ${item.label} | [${plate}]`
                 : `YOLO LIVE | ${item.id} | ${item.label} | ${item.speed} km/h | [${plate}]`;
@@ -541,7 +579,7 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
     return () => {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
-  }, [feedMode, permissionState, isFrozen, latestDetection, privacyMaskEnabled, trackId, isHumanSubject, aiClassLabel]);
+  }, [feedMode, permissionState, isFrozen]);
 
   // Snapshot Capture
   const handleCaptureSnapshot = () => {
