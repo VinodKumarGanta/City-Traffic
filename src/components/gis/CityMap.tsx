@@ -200,9 +200,9 @@ const MapMouseMoveController: React.FC<{
     container.addEventListener('mousemove', onContainerMouseMove);
     container.addEventListener('mouseleave', onContainerMouseLeave);
 
-    // Continuous Edge-Glide Loop
-    const edgeMargin = 40; // px threshold from viewport edge
-    const maxSpeed = 12;   // px per frame for smooth cinematic gliding
+    // Continuous Edge-Glide Loop (Mouse Movement Glides the Map)
+    const edgeMargin = 70; // px threshold from viewport edge
+    const maxSpeed = 16;   // px per frame for fluid responsive gliding
 
     const edgeGlideLoop = () => {
       if (edgeGlideEnabled && mousePosRef.current && containerRectRef.current && !isUserDraggingRef.current) {
@@ -215,16 +215,16 @@ const MapMouseMoveController: React.FC<{
 
         // Left / Right edge gliding
         if (x < edgeMargin && x >= 0) {
-          panX = -maxSpeed * Math.pow(1 - x / edgeMargin, 1.4);
+          panX = -maxSpeed * Math.pow(1 - x / edgeMargin, 1.3);
         } else if (x > width - edgeMargin && x <= width) {
-          panX = maxSpeed * Math.pow(1 - (width - x) / edgeMargin, 1.4);
+          panX = maxSpeed * Math.pow(1 - (width - x) / edgeMargin, 1.3);
         }
 
         // Top / Bottom edge gliding
         if (y < edgeMargin && y >= 0) {
-          panY = -maxSpeed * Math.pow(1 - y / edgeMargin, 1.4);
+          panY = -maxSpeed * Math.pow(1 - y / edgeMargin, 1.3);
         } else if (y > height - edgeMargin && y <= height) {
-          panY = maxSpeed * Math.pow(1 - (height - y) / edgeMargin, 1.4);
+          panY = maxSpeed * Math.pow(1 - (height - y) / edgeMargin, 1.3);
         }
 
         if (panX !== 0 || panY !== 0) {
@@ -245,83 +245,56 @@ const MapMouseMoveController: React.FC<{
     };
   }, [map, edgeGlideEnabled]);
 
+  // Support Right-Click & Middle-Click Drag to Pan with Mouse Movement
+  useEffect(() => {
+    const container = map.getContainer();
+    if (!container) return;
+
+    let isMousePanning = false;
+    let lastPos = { x: 0, y: 0 };
+
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button === 1 || e.button === 2) {
+        isMousePanning = true;
+        lastPos = { x: e.clientX, y: e.clientY };
+        e.preventDefault();
+      }
+    };
+
+    const onMouseMove = (e: MouseEvent) => {
+      if (isMousePanning) {
+        const dx = lastPos.x - e.clientX;
+        const dy = lastPos.y - e.clientY;
+        lastPos = { x: e.clientX, y: e.clientY };
+        map.panBy([dx, dy], { animate: false });
+        e.preventDefault();
+      }
+    };
+
+    const onMouseUp = (e: MouseEvent) => {
+      if (e.button === 1 || e.button === 2) {
+        isMousePanning = false;
+      }
+    };
+
+    const onContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+    };
+
+    container.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    container.addEventListener('contextmenu', onContextMenu);
+
+    return () => {
+      container.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      container.removeEventListener('contextmenu', onContextMenu);
+    };
+  }, [map]);
+
   return null;
-};
-
-// Sleek Professional GIS Floating Controls (Replaces Childish Joystick)
-const MapControlsWidget: React.FC<{
-  onRecenter: () => void;
-  edgeGlideEnabled: boolean;
-  onToggleEdgeGlide: () => void;
-  onToggleFullscreen?: () => void;
-  isFullscreen?: boolean;
-}> = ({ onRecenter, edgeGlideEnabled, onToggleEdgeGlide, onToggleFullscreen, isFullscreen }) => {
-  const map = useMap();
-
-  return (
-    <div className="absolute bottom-12 right-3 z-[1000] pointer-events-auto select-none flex flex-col items-center gap-2 animate-in fade-in">
-      {/* Sleek Glassmorphism Control Pillar */}
-      <div className="bg-slate-900/90 backdrop-blur-md border border-slate-700/80 hover:border-cyan-500/50 rounded-2xl p-1.5 shadow-2xl flex flex-col items-center gap-1.5 transition-all">
-        {/* Zoom In */}
-        <button
-          type="button"
-          onClick={() => map.zoomIn()}
-          className="w-8 h-8 rounded-xl bg-slate-800/80 hover:bg-cyan-600 text-slate-200 hover:text-white flex items-center justify-center transition-all hover:scale-105 active:scale-95 shadow border border-slate-700/60 hover:border-cyan-400 group relative"
-          title="Zoom In (+)"
-        >
-          <Plus className="w-4 h-4" />
-        </button>
-
-        {/* Zoom Out */}
-        <button
-          type="button"
-          onClick={() => map.zoomOut()}
-          className="w-8 h-8 rounded-xl bg-slate-800/80 hover:bg-cyan-600 text-slate-200 hover:text-white flex items-center justify-center transition-all hover:scale-105 active:scale-95 shadow border border-slate-700/60 hover:border-cyan-400 group relative"
-          title="Zoom Out (-)"
-        >
-          <Minus className="w-4 h-4" />
-        </button>
-
-        <div className="w-5 h-[1px] bg-slate-700/80 my-0.5" />
-
-        {/* Recenter */}
-        <button
-          type="button"
-          onClick={onRecenter}
-          className="w-8 h-8 rounded-xl bg-cyan-950/80 hover:bg-cyan-600 text-cyan-300 hover:text-white flex items-center justify-center transition-all hover:scale-105 active:scale-95 shadow border border-cyan-500/50 group relative"
-          title="Recenter Map View"
-        >
-          <Target className="w-4 h-4" />
-        </button>
-
-        {/* Edge-Pan / Mouse-Glide Mode Toggle */}
-        <button
-          type="button"
-          onClick={onToggleEdgeGlide}
-          className={`w-8 h-8 rounded-xl flex items-center justify-center transition-all hover:scale-105 active:scale-95 shadow border group relative ${
-            edgeGlideEnabled
-              ? 'bg-emerald-950/80 border-emerald-500/60 text-emerald-400 hover:bg-emerald-600 hover:text-white'
-              : 'bg-slate-800/80 border-slate-700/60 text-slate-400 hover:bg-slate-700 hover:text-slate-200'
-          }`}
-          title={edgeGlideEnabled ? 'Mouse Glide Mode Active (Move mouse to edges to glide)' : 'Mouse Glide Mode Off (Click & drag to pan)'}
-        >
-          <Compass className={`w-4 h-4 ${edgeGlideEnabled ? 'animate-spin-slow' : ''}`} />
-        </button>
-
-        {/* Fullscreen */}
-        {onToggleFullscreen && (
-          <button
-            type="button"
-            onClick={onToggleFullscreen}
-            className="w-8 h-8 rounded-xl bg-slate-800/80 hover:bg-cyan-600 text-slate-200 hover:text-white flex items-center justify-center transition-all hover:scale-105 active:scale-95 shadow border border-slate-700/60 hover:border-cyan-400"
-            title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen Map'}
-          >
-            {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
-          </button>
-        )}
-      </div>
-    </div>
-  );
 };
 
 // Custom SVG Icons
@@ -746,18 +719,6 @@ export const CityMap: React.FC<CityMapProps> = ({
             setMapCenter(newCenter);
             setMapZoom(newZoom);
           }}
-        />
-
-        {/* Sleek Professional GIS Controls (Replaces Childish Joystick) */}
-        <MapControlsWidget
-          onRecenter={() => {
-            setMapCenter(initialCenter);
-            setMapZoom(initialZoom);
-          }}
-          edgeGlideEnabled={edgeGlideEnabled}
-          onToggleEdgeGlide={() => setEdgeGlideEnabled(!edgeGlideEnabled)}
-          onToggleFullscreen={toggleFullscreen}
-          isFullscreen={isFullscreen}
         />
 
         {/* Dynamic Free Open GIS Basemap Tile Layer */}
