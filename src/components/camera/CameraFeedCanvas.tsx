@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { CameraNode, ANPRDetection } from '../../types/traffic';
 import { Zap, Radio, Settings, RefreshCw, CheckCircle2, AlertCircle } from 'lucide-react';
+import { getApiBaseUrl } from '../../services/apiConfig';
 
 interface CameraFeedCanvasProps {
   camera: CameraNode;
@@ -24,12 +25,12 @@ export const CameraFeedCanvas: React.FC<CameraFeedCanvasProps> = ({
   const [streamKey, setStreamKey] = useState(Date.now());
   const [isSavingSource, setIsSavingSource] = useState(false);
 
-  const gatewayStreamUrl = `http://localhost:5001/video_feed/${camera.id}?t=${streamKey}`;
+  const gatewayStreamUrl = `${getApiBaseUrl()}/video_feed/${camera.id}?t=${streamKey}`;
 
   // Check Gateway Status
   const checkGatewayHealth = async () => {
     try {
-      const res = await fetch('http://localhost:5001/api/status', { method: 'GET' });
+      const res = await fetch(`${getApiBaseUrl()}/api/status`, { method: 'GET' });
       if (res.ok) {
         const data = await res.json();
         setGatewayOnline(true);
@@ -56,7 +57,7 @@ export const CameraFeedCanvas: React.FC<CameraFeedCanvasProps> = ({
     e.preventDefault();
     setIsSavingSource(true);
     try {
-      const res = await fetch(`http://localhost:5001/api/camera/${camera.id}/source`, {
+      const res = await fetch(`${getApiBaseUrl()}/api/camera/${camera.id}/source`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ source: rtspInput })

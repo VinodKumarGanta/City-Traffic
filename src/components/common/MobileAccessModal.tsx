@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { audioAlertService } from '../../services/audioAlertService';
 import { QRCodeDisplay } from './QRCodeDisplay';
+import { getApiBaseUrl } from '../../services/apiConfig';
 
 interface MobileAccessModalProps {
   isOpen: boolean;
@@ -27,7 +28,7 @@ export const MobileAccessModal: React.FC<MobileAccessModalProps> = ({ isOpen, on
   // Auto-detect server's Wi-Fi / LAN IP from backend
   useEffect(() => {
     let isMounted = true;
-    fetch('http://localhost:5001/api/system/network-info')
+    fetch(`${getApiBaseUrl()}/api/system/network-info`)
       .then(res => res.json())
       .then(data => {
         if (!isMounted) return;

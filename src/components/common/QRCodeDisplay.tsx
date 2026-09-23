@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { RefreshCw, QrCode, ExternalLink, Check, Copy } from 'lucide-react';
+import { getApiBaseUrl } from '../../services/apiConfig';
 
 interface QRCodeDisplayProps {
   value: string;
@@ -20,8 +21,8 @@ export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({
   const [copied, setCopied] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Primary: Live local Python AI Gateway QR generator
-  const primaryQrUrl = `http://localhost:5001/api/qrcode?data=${encodeURIComponent(value)}&format=png`;
+  // Primary: Live local/LAN Python AI Gateway QR generator
+  const primaryQrUrl = `${getApiBaseUrl()}/api/qrcode?data=${encodeURIComponent(value)}&format=png`;
   // Fallback: Public QR API if local server is starting
   const fallbackQrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(value)}&margin=10`;
 

@@ -72,8 +72,24 @@ interface TrafficStoreValue {
 
 const TrafficStoreContext = createContext<TrafficStoreValue | null>(null);
 
+const VALID_VIEWS: ViewId[] = [
+  'overview', 'anpr', 'predictive', 'cameras', 'analytics', 
+  'alerts', 'reports', 'settings', 'mobile', 'citizen', 
+  'challan', 'greencorridor'
+];
+
+const getInitialView = (): ViewId => {
+  if (typeof window !== 'undefined' && window.location.hash) {
+    const raw = window.location.hash.replace(/^#\/?/, '').toLowerCase();
+    if (VALID_VIEWS.includes(raw as ViewId)) {
+      return raw as ViewId;
+    }
+  }
+  return 'overview';
+};
+
 export const TrafficStoreProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [currentView, setCurrentView] = useState<ViewId>('overview');
+  const [currentView, setCurrentView] = useState<ViewId>(getInitialView);
   const [currentCity, setCurrentCity] = useState('Hyderabad Command Center');
   const [cameras, setCameras] = useState<CameraNode[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState('');
@@ -184,6 +200,24 @@ export const TrafficStoreProvider: React.FC<{ children: React.ReactNode }> = ({ 
     };
   }, []);
 
+  useEffect(() => {
+    const handleHashChange = () => {
+      const raw = window.location.hash.replace(/^#\/?/, '').toLowerCase();
+      if (VALID_VIEWS.includes(raw as ViewId)) {
+        setCurrentView(raw as ViewId);
+      }
+    };
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
+
+  const handleSetCurrentView = useCallback((view: ViewId) => {
+    setCurrentView(view);
+    if (typeof window !== 'undefined') {
+      window.location.hash = view;
+    }
+  }, []);
+
   const handleGlobalSearch = (query: string) => {
     const upper = query.toUpperCase();
     const camMatch = cameras.find(
@@ -249,7 +283,7 @@ export const TrafficStoreProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
   const value: TrafficStoreValue = {
     currentView,
-    setCurrentView,
+    setCurrentView: handleSetCurrentView,
     currentCity,
     setCurrentCity,
     cameras,

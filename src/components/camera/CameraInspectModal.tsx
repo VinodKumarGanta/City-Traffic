@@ -18,6 +18,7 @@ import {
   Sliders,
   Cpu
 } from 'lucide-react';
+import { getApiBaseUrl } from '../../services/apiConfig';
 
 interface CameraInspectModalProps {
   camera: CameraNode | null;
@@ -111,7 +112,7 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
   // Check RTSP Gateway Health
   const checkGateway = async () => {
     try {
-      const res = await fetch('http://localhost:5001/api/status', { method: 'GET' });
+      const res = await fetch(`${getApiBaseUrl()}/api/status`, { method: 'GET' });
       if (res.ok) {
         const data = await res.json();
         setGatewayStatus(true);
@@ -135,7 +136,7 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
     const src = customSrc !== undefined ? customSrc : sourceInput;
     setIsConnecting(true);
     try {
-      const res = await fetch(`http://localhost:5001/api/camera/${camera.id}/source`, {
+      const res = await fetch(`${getApiBaseUrl()}/api/camera/${camera.id}/source`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ source: src })
@@ -254,7 +255,7 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
     link.click();
   };
 
-  const gatewayUrl = `http://localhost:5001/video_feed/${camera.id}?t=${streamKey}`;
+  const gatewayUrl = `${getApiBaseUrl()}/video_feed/${camera.id}?t=${streamKey}`;
 
   return (
     <div className="fixed inset-0 z-[9999] bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 animate-in fade-in duration-200">

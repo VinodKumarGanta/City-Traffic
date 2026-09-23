@@ -18,6 +18,7 @@ import {
   VehicleTrajectory,
   ANPRDetection
 } from '../types/traffic';
+import { getApiBaseUrl } from './apiConfig';
 
 export interface PostgresConnectionStatus {
   connected: boolean;
@@ -46,10 +47,7 @@ class PostgresDatabaseService {
   private lastStatus: PostgresConnectionStatus;
 
   constructor() {
-    const metaEnv = (import.meta as unknown as { env?: { VITE_API_BASE_URL?: string } }).env || {};
-    this.baseUrl = metaEnv.VITE_API_BASE_URL 
-      ? `${metaEnv.VITE_API_BASE_URL}/api/db`
-      : 'http://localhost:5001/api/db';
+    this.baseUrl = `${getApiBaseUrl()}/api/db`;
 
     this.lastStatus = {
       connected: false,
