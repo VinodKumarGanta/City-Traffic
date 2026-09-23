@@ -11,7 +11,6 @@ import {
   Unlock,
   MoreHorizontal,
   Bell,
-  Atom,
 } from 'lucide-react';
 import { audioAlertService } from '../../services/audioAlertService';
 import { CITY_OPTIONS } from '../../constants/cities';
@@ -114,12 +113,6 @@ export const Navbar: React.FC<NavbarProps> = ({
       </form>
 
       <div className="flex items-center gap-2">
-        {/* Quantum QPU Coprocessor Status Pill */}
-        <div className="hidden xl:flex items-center gap-1.5 bg-indigo-950/70 border border-indigo-500/40 rounded-lg px-2.5 py-1 text-[11px] font-mono text-indigo-300">
-          <Atom className="w-3.5 h-3.5 text-indigo-400 animate-spin [animation-duration:8s]" />
-          <span>QPU 128-Qubit: Coherent</span>
-        </div>
-
         <div className="flex items-center gap-1.5 text-[11px] font-mono text-slate-400 px-2">
           <span
             className={`w-2 h-2 rounded-full ${connection?.connected ? 'bg-emerald-500' : 'bg-slate-600'}`}
