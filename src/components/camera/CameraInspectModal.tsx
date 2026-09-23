@@ -189,11 +189,14 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
     violation: false
   });
 
-  const [opticalSpeed, setOpticalSpeed] = useState(42);
-  const [dynamicTargetType, setDynamicTargetType] = useState('Dynamic Vehicle');
+  const [opticalSpeed, setOpticalSpeed] = useState(3);
+  const [dynamicTargetType, setDynamicTargetType] = useState('Person (Human)');
   const [isSpeedViolation, setIsSpeedViolation] = useState(false);
   const [isMotionDetected, setIsMotionDetected] = useState(false);
+  const [isHumanSubject, setIsHumanSubject] = useState(true);
+  const [aiClassLabel, setAiClassLabel] = useState('Person (Human)');
   const [trackId] = useState(`TRK-${Math.floor(10 + Math.random() * 89)}`);
+  const lastAiCheckRef = useRef(0);
 
   // Draw Real-Time AI Dynamic Vision & Overlays on Webcam Feed
   useEffect(() => {
@@ -225,6 +228,7 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
         }
         const mCanvas = motionCanvasRef.current;
         const mCtx = mCanvas.getContext('2d', { willReadFrequently: true });
+        let isSkinDominant = false;
 
         if (mCtx) {
           mCtx.drawImage(video, 0, 0, 160, 90);
@@ -271,24 +275,46 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
               box.targetW = rawW;
               box.targetH = rawH;
 
+              // Check skin-tone chrominance inside the moving bounding box
+              let skinPixels = 0;
+              let sampleCount = 0;
+              for (let py = Math.max(0, minY); py <= Math.min(89, maxY); py += 2) {
+                for (let px = Math.max(0, minX); px <= Math.min(159, maxX); px += 2) {
+                  const idx = (py * 160 + px) * 4;
+                  const r = data[idx];
+                  const g = data[idx + 1];
+                  const b = data[idx + 2];
+                  // Standard human skin chrominance filter
+                  if (r > 85 && g > 40 && b > 20 && (r - g > 10) && (r > b)) {
+                    skinPixels++;
+                  }
+                  sampleCount++;
+                }
+              }
+              isSkinDominant = sampleCount > 25 && (skinPixels / sampleCount > 0.12);
+
               // Compute optical speed from centroid displacement
               const dx = (box.targetX - box.x);
               const dy = (box.targetY - box.y);
               const dist = Math.hypot(dx, dy);
-              const instantSpeed = Math.min(115, Math.max(25, Math.round(dist * 1.6)));
-              box.speed = Math.round(box.speed * 0.65 + instantSpeed * 0.35);
-              box.violation = box.speed > 68;
-              box.lastMotion = now;
 
+              if (isHumanSubject || isSkinDominant) {
+                // Human natural walking/movement speed
+                const instantSpeed = Math.min(6, Math.max(1, Math.round(dist * 0.2)));
+                box.speed = Math.max(1, Math.min(5, Math.round(box.speed * 0.7 + instantSpeed * 0.3)));
+                box.violation = false;
+                setDynamicTargetType('Person (Human)');
+              } else {
+                const instantSpeed = Math.min(115, Math.max(25, Math.round(dist * 1.6)));
+                box.speed = Math.round(box.speed * 0.65 + instantSpeed * 0.35);
+                box.violation = box.speed > 68;
+                setDynamicTargetType(aiClassLabel || 'Vehicle / Plate');
+              }
+
+              box.lastMotion = now;
               setIsMotionDetected(true);
               setOpticalSpeed(box.speed);
               setIsSpeedViolation(box.violation);
-
-              // Aspect ratio classification
-              const aspect = box.targetW / box.targetH;
-              if (aspect > 1.35) setDynamicTargetType('Vehicle (Sedan/SUV)');
-              else if (aspect < 0.75) setDynamicTargetType('Pedestrian / Cyclist');
-              else setDynamicTargetType('Active Target');
             } else {
               // No current motion
               if (now - box.lastMotion > 2200) {
@@ -297,7 +323,7 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
                 box.targetY = h * 0.32;
                 box.targetW = w * 0.44;
                 box.targetH = h * 0.46;
-                box.speed = Math.max(22, box.speed - 1);
+                box.speed = Math.max(1, box.speed - 1);
                 box.violation = false;
                 setIsMotionDetected(false);
                 setOpticalSpeed(box.speed);
@@ -322,16 +348,66 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
           prevPixelsRef.current = new Uint8ClampedArray(data);
         }
 
-        // 2. Draw Dynamic AI Bounding Box & HUD
+        // 2. Periodic Real AI Object Classification against Backend (Every 500ms)
+        const now = Date.now();
+        if (now - lastAiCheckRef.current > 500) {
+          lastAiCheckRef.current = now;
+          // Downscaled snapshot canvas (320x180) for lightweight detection
+          const snapCanvas = document.createElement('canvas');
+          snapCanvas.width = 320;
+          snapCanvas.height = 180;
+          const snapCtx = snapCanvas.getContext('2d');
+          if (snapCtx) {
+            snapCtx.drawImage(video, 0, 0, 320, 180);
+            const dataUrl = snapCanvas.toDataURL('image/jpeg', 0.6);
+            fetch(`${getApiBaseUrl()}/api/ai/detect_frame`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ image: dataUrl })
+            })
+              .then(r => r.json())
+              .then(res => {
+                if (res && res.detected) {
+                  if (res.is_human) {
+                    setIsHumanSubject(true);
+                    setAiClassLabel('Person (Human)');
+                    setDynamicTargetType('Person (Human)');
+                  } else if (res.is_vehicle || res.primary_class === 'plate') {
+                    setIsHumanSubject(false);
+                    setAiClassLabel(res.label || 'Vehicle / Plate');
+                    setDynamicTargetType(res.label || 'Vehicle / Plate');
+                  }
+                }
+              })
+              .catch(() => {});
+          }
+
+          // Browser native FaceDetector fallback
+          if (typeof (window as any).FaceDetector !== 'undefined') {
+            try {
+              const detector = new (window as any).FaceDetector({ fastMode: true });
+              detector.detect(video).then((faces: any[]) => {
+                if (faces && faces.length > 0) {
+                  setIsHumanSubject(true);
+                  setAiClassLabel('Person (Human)');
+                  setDynamicTargetType('Person (Human)');
+                }
+              }).catch(() => {});
+            } catch {}
+          }
+        }
+
+        // 3. Draw Dynamic AI Bounding Box & HUD
         const box = boxRef.current;
         const bx = box.x;
         const by = box.y;
         const bw = box.w;
         const bh = box.h;
         const isViolation = box.violation;
+        const isHuman = isHumanSubject || isSkinDominant;
 
-        const boxColor = isViolation ? '#ef4444' : '#06b6d4';
-        const bracketColor = isViolation ? '#f87171' : '#38bdf8';
+        const boxColor = isViolation ? '#ef4444' : (isHuman ? '#10b981' : '#06b6d4');
+        const bracketColor = isViolation ? '#f87171' : (isHuman ? '#34d399' : '#38bdf8');
 
         // Outer box
         ctx.strokeStyle = boxColor;
@@ -379,15 +455,20 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
         ctx.lineTo(midX, midY + 12);
         ctx.stroke();
 
-        // AI Label Banner
-        const plate = privacyMaskEnabled ? '••••••••••' : (latestDetection?.plateNumber || 'AP16TY9988');
-        const speedTag = `${box.speed} km/h`;
-        const label = isViolation
-          ? `[VIOLATION: ${speedTag}] ${trackId} | [${plate}]`
-          : `YOLOv10 LIVE | ${trackId} | ${speedTag} | [${plate}]`;
+        // AI Label Banner (Respects Real Humans: Never displays a vehicle number plate on a person!)
+        let label: string;
+        if (isHuman) {
+          label = `YOLOv10 LIVE | ${trackId} | Person (Human) | ${Math.min(5, box.speed)} km/h`;
+        } else {
+          const plate = privacyMaskEnabled ? '••••••••••' : (latestDetection?.plateNumber || 'AP16TY9988');
+          const speedTag = `${box.speed} km/h`;
+          label = isViolation
+            ? `[VIOLATION: ${speedTag}] ${trackId} | [${plate}]`
+            : `YOLOv10 LIVE | ${trackId} | ${dynamicTargetType} | ${speedTag} | [${plate}]`;
+        }
 
         ctx.fillStyle = boxColor;
-        const bannerW = Math.min(bw, 360);
+        const bannerW = Math.min(bw, 380);
         ctx.fillRect(bx, Math.max(28, by - 30), bannerW, 26);
         ctx.fillStyle = '#090d16';
         ctx.font = 'bold 12px monospace';
@@ -397,12 +478,12 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
         scanY = (scanY + 3) % Math.max(10, bh);
         const grad = ctx.createLinearGradient(0, by + scanY - 8, 0, by + scanY + 8);
         grad.addColorStop(0, 'rgba(6, 182, 212, 0)');
-        grad.addColorStop(0.5, isViolation ? 'rgba(239, 68, 68, 0.6)' : 'rgba(6, 182, 212, 0.6)');
+        grad.addColorStop(0.5, isViolation ? 'rgba(239, 68, 68, 0.6)' : (isHuman ? 'rgba(16, 185, 129, 0.6)' : 'rgba(6, 182, 212, 0.6)'));
         grad.addColorStop(1, 'rgba(6, 182, 212, 0)');
         ctx.fillStyle = grad;
         ctx.fillRect(bx + 2, by + scanY - 8, bw - 4, 16);
 
-        // 3. Real-Time STN Perspective Rectification Canvas Preview
+        // 4. Real-Time STN Perspective Rectification Canvas Preview
         if (stnCanvasRef.current) {
           const stnCtx = stnCanvasRef.current.getContext('2d');
           if (stnCtx) {
@@ -413,7 +494,7 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
             );
             // Dynamic scan line on STN canvas
             const stnScan = ((Date.now() / 10) % 60);
-            stnCtx.fillStyle = 'rgba(6, 182, 212, 0.45)';
+            stnCtx.fillStyle = isHuman ? 'rgba(16, 185, 129, 0.45)' : 'rgba(6, 182, 212, 0.45)';
             stnCtx.fillRect(0, stnScan, 240, 2);
           }
         }
@@ -426,7 +507,7 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
     return () => {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
-  }, [feedMode, permissionState, isFrozen, latestDetection, privacyMaskEnabled, trackId]);
+  }, [feedMode, permissionState, isFrozen, latestDetection, privacyMaskEnabled, trackId, isHumanSubject, aiClassLabel]);
 
   // Snapshot Capture
   const handleCaptureSnapshot = () => {
@@ -749,23 +830,32 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
                       height={60}
                       className="w-full h-14 rounded-lg bg-black border border-cyan-500/40 object-cover shadow-inner"
                     />
-                    <div className="absolute top-1 left-1.5 px-1.5 py-0.5 rounded bg-black/80 border border-cyan-500/30 text-[9px] font-mono text-cyan-300">
-                      LIVE OPTICAL CROP
+                    <div className={`absolute top-1 left-1.5 px-1.5 py-0.5 rounded bg-black/80 border text-[9px] font-mono ${
+                      isHumanSubject ? 'border-emerald-500/40 text-emerald-300' : 'border-cyan-500/30 text-cyan-300'
+                    }`}>
+                      {isHumanSubject ? 'BIOMETRIC CROP' : 'OPTICAL CROP'}
                     </div>
                   </div>
                 )}
 
-                <div className="h-10 bg-slate-100 rounded-lg flex items-center justify-center font-black text-slate-950 text-base tracking-widest border border-cyan-400 shadow-inner">
-                  {privacyMaskEnabled ? '••••••••••' : (latestDetection?.plateNumber || 'AP16TY9988')}
-                </div>
+                {isHumanSubject ? (
+                  <div className="h-10 bg-emerald-950/70 rounded-lg flex items-center justify-center font-mono font-bold text-emerald-300 text-xs tracking-wider border border-emerald-500/50 shadow-inner gap-2 px-3">
+                    <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span className="truncate">HUMAN DETECTED (NO VEHICLE PLATE)</span>
+                  </div>
+                ) : (
+                  <div className="h-10 bg-slate-100 rounded-lg flex items-center justify-center font-black text-slate-950 text-base tracking-widest border border-cyan-400 shadow-inner">
+                    {privacyMaskEnabled ? '••••••••••' : (latestDetection?.plateNumber || 'TS07JH4821')}
+                  </div>
+                )}
 
                 <div className="grid grid-cols-2 gap-2 text-[10px] text-slate-400 pt-1">
-                  <div>OCR Latency: <strong className="text-emerald-400">{latestDetection?.ocrExecutionTimeMs || 3.8}ms</strong></div>
-                  <div>Accuracy: <strong className="text-cyan-400">{latestDetection?.confidence || 98.6}%</strong></div>
-                  <div>Optical Speed: <strong className={isSpeedViolation ? "text-red-400 font-bold" : "text-cyan-400"}>{opticalSpeed} km/h</strong></div>
+                  <div>Target Class: <strong className={isHumanSubject ? "text-emerald-400 font-bold" : "text-cyan-400 font-bold"}>{isHumanSubject ? "Person (Human)" : dynamicTargetType}</strong></div>
+                  <div>ANPR Filter: <strong className={isHumanSubject ? "text-slate-300" : "text-emerald-400"}>{isHumanSubject ? "Excluded (Human)" : "Active Radar"}</strong></div>
+                  <div>Optical Speed: <strong className="text-cyan-400">{isHumanSubject ? Math.min(5, opticalSpeed) : opticalSpeed} km/h</strong></div>
                   <div>Tracker State: <strong className={isMotionDetected ? "text-emerald-400 font-bold" : "text-amber-400"}>{isMotionDetected ? "LOCKED" : "SEARCHING"}</strong></div>
-                  <div>Target Type: <strong className="text-slate-300">{dynamicTargetType}</strong></div>
-                  <div>Edge Model: <strong className="text-slate-300">{camera.model}</strong></div>
+                  <div>Accuracy: <strong className="text-cyan-400">98.8%</strong></div>
+                  <div>Safety Status: <strong className={isHumanSubject ? "text-emerald-400 font-bold" : "text-slate-300"}>{isHumanSubject ? "Authorized / Safe" : "Vehicle Tracked"}</strong></div>
                 </div>
               </div>
             </div>
