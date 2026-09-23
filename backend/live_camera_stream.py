@@ -71,7 +71,7 @@ def get_db():
 # CAMERA STREAM MANAGER (RTSP & MJPEG VIDEO)
 # =====================================================================
 DEFAULT_SOURCES = {
-    'CAM-101': 0,
+    'CAM-101': 'simulation',
     'CAM-AP-VJA01': 'http://127.0.0.1:8080/video',
     'CAM-AP-ELR01': 'http://127.0.0.1:8081/video',
     'CAM-AP-RJY01': 'http://127.0.0.1:8082/video',
@@ -85,7 +85,7 @@ class CameraStreamManager:
 
     def get_source(self, camera_id):
         with self.lock:
-            return self.sources.get(camera_id, 0)
+            return self.sources.get(camera_id, 'simulation')
 
     def set_source(self, camera_id, new_source):
         with self.lock:
@@ -98,6 +98,27 @@ class CameraStreamManager:
                 except Exception:
                     pass
                 del self.active_captures[camera_id]
+
+    def release_camera(self, camera_id=None):
+        with self.lock:
+            if camera_id:
+                if camera_id in self.active_captures:
+                    try:
+                        self.active_captures[camera_id].release()
+                    except Exception:
+                        pass
+                    del self.active_captures[camera_id]
+                self.sources[camera_id] = 'simulation'
+            else:
+                for cid, cap in list(self.active_captures.items()):
+                    try:
+                        cap.release()
+                    except Exception:
+                        pass
+                self.active_captures.clear()
+                for cid in self.sources:
+                    if self.sources[cid] == 0:
+                        self.sources[cid] = 'simulation'
 
     def generate_synthetic_frame(self, camera_id):
         w, h = 640, 360
@@ -134,21 +155,31 @@ class CameraStreamManager:
 
     def get_frame(self, camera_id):
         source = self.get_source(camera_id)
+        if source == 'simulation' or source == 'synthetic':
+            return self.generate_synthetic_frame(camera_id)
+
         cap = self.active_captures.get(camera_id)
 
         if cap is None or not cap.isOpened():
-            cap = cv2.VideoCapture(source)
-            if cap.isOpened():
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
-                self.active_captures[camera_id] = cap
-            else:
+            try:
+                cap = cv2.VideoCapture(source)
+                if cap.isOpened():
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
+                    self.active_captures[camera_id] = cap
+                else:
+                    return self.generate_synthetic_frame(camera_id)
+            except Exception:
                 return self.generate_synthetic_frame(camera_id)
 
         ret, frame = cap.read()
         if not ret:
-            cap.release()
-            del self.active_captures[camera_id]
+            try:
+                cap.release()
+            except Exception:
+                pass
+            if camera_id in self.active_captures:
+                del self.active_captures[camera_id]
             return self.generate_synthetic_frame(camera_id)
 
         cv2.rectangle(frame, (0, 0), (640, 30), (10, 15, 26), -1)
@@ -395,6 +426,16 @@ def configure_camera_source(camera_id):
         return jsonify({"error": "Missing 'source' parameter"}), 400
     manager.set_source(camera_id, new_source)
     return jsonify({"success": True, "camera_id": camera_id, "configured_source": str(new_source)})
+
+@app.route('/api/camera/<camera_id>/release', methods=['POST'])
+def release_camera_device(camera_id):
+    manager.release_camera(camera_id)
+    return jsonify({"success": True, "released": camera_id})
+
+@app.route('/api/camera/release_all', methods=['POST'])
+def release_all_cameras():
+    manager.release_camera()
+    return jsonify({"success": True, "released": "all"})
 
 
 # 1. System Health & Aggregated KPIs

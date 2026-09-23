@@ -73,6 +73,13 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
     setPermissionError(null);
     stopWebcamStream();
 
+    // Release any backend hold on camera 0 first
+    try {
+      await fetch(`${getApiBaseUrl()}/api/camera/release_all`, { method: 'POST' });
+    } catch {
+      // Backend may be starting or offline
+    }
+
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         video: {
@@ -93,7 +100,15 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
     } catch (err: any) {
       console.error('Webcam permission error:', err);
       setPermissionState('denied');
-      setPermissionError(err.message || 'Camera permission was denied by user or browser.');
+      if (err.name === 'NotReadableError' || err.message?.toLowerCase().includes('in use')) {
+        setPermissionError('Device in use: Your webcam is currently in use by another app (e.g. Zoom, Teams, Camera app, or Python).');
+      } else if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        setPermissionError('Camera permission denied: Click the camera icon in your browser address bar to allow camera access.');
+      } else if (err.name === 'NotFoundError') {
+        setPermissionError('No camera detected: No webcam hardware was found on your device.');
+      } else {
+        setPermissionError(err.message || 'Camera permission was denied by user or browser.');
+      }
     }
   };
 
@@ -314,16 +329,38 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
                       Allow access to your device webcam to feed live real-world video into this camera node's AI pipeline.
                     </p>
                     {permissionError && (
-                      <div className="text-xs text-red-400 bg-red-950/40 px-3 py-1.5 rounded border border-red-500/30 max-w-md font-mono">
-                        {permissionError}
+                      <div className="text-xs text-red-400 bg-red-950/60 p-3 rounded-xl border border-red-500/40 max-w-md font-mono text-left space-y-1 shadow-lg">
+                        <div className="font-bold flex items-center gap-1.5 text-red-300">
+                          <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
+                          <span>{permissionError}</span>
+                        </div>
+                        {permissionError.includes('Device in use') && (
+                          <p className="text-[11px] text-slate-300 border-t border-red-900/50 pt-1.5 leading-relaxed">
+                            💡 <strong>Fix:</strong> Close other applications using your webcam (Zoom, Microsoft Teams, Discord, Windows Camera app), or click <strong>Switch to RTSP Feed</strong> below to stream via Python backend.
+                          </p>
+                        )}
                       </div>
                     )}
-                    <button
-                      onClick={requestWebcamPermission}
-                      className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs font-mono shadow-lg shadow-cyan-600/30 transition-all flex items-center gap-2"
-                    >
-                      <Zap className="w-4 h-4" /> Grant Camera Permission
-                    </button>
+                    <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+                      <button
+                        onClick={requestWebcamPermission}
+                        className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs font-mono shadow-lg shadow-cyan-600/30 transition-all flex items-center gap-2"
+                      >
+                        <Zap className="w-4 h-4" /> Grant Camera / Retry
+                      </button>
+                      <button
+                        onClick={() => setFeedMode('rtsp_gateway')}
+                        className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 font-bold text-xs font-mono border border-slate-700 transition-all flex items-center gap-1.5"
+                      >
+                        <Radio className="w-3.5 h-3.5" /> Switch to RTSP Feed
+                      </button>
+                      <button
+                        onClick={() => setFeedMode('simulation')}
+                        className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs font-mono border border-slate-700 transition-all flex items-center gap-1.5"
+                      >
+                        <Cpu className="w-3.5 h-3.5" /> AI Simulation
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
