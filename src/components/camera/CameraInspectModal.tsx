@@ -217,6 +217,8 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
   const [isMotionDetected, setIsMotionDetected] = useState(false);
   const [isHumanSubject, setIsHumanSubject] = useState(true);
   const [aiClassLabel, setAiClassLabel] = useState('Person (Human)');
+  const [selectedTargetId, setSelectedTargetId] = useState<string | null>(null);
+  const [aiLatency, setAiLatency] = useState<number>(44);
   const [trackId] = useState(`TRK-${Math.floor(10 + Math.random() * 89)}`);
 
   // Draw Real-Time AI Dynamic Multi-Object Overlays on Webcam Feed
@@ -252,7 +254,7 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
           const sCanvas = snapCanvasRef.current;
           const vw = video.videoWidth || 640;
           const vh = video.videoHeight || 480;
-          const snapW = 480;
+          const snapW = 640;
           const snapH = Math.round((snapW * vh) / vw);
           sCanvas.width = snapW;
           sCanvas.height = snapH;
@@ -260,7 +262,7 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
           const sCtx = sCanvas.getContext('2d');
           if (sCtx) {
             sCtx.drawImage(video, 0, 0, snapW, snapH);
-            const dataUrl = sCanvas.toDataURL('image/jpeg', 0.70);
+            const dataUrl = sCanvas.toDataURL('image/jpeg', 0.82);
             fetch(`${getApiBaseUrl()}/api/ai/detect_frame`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -269,6 +271,7 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
               .then(r => r.json())
               .then(res => {
                 if (res && res.objects && Array.isArray(res.objects)) {
+                  if (res.latency_ms) setAiLatency(res.latency_ms);
                   const map = trackedObjectsRef.current;
                   const currTime = Date.now();
                   const scaleX = w / (res.img_width || snapW);
@@ -286,7 +289,7 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
 
                     // Spatial centroid matching with existing tracks of the same class
                     let bestKey: string | null = null;
-                    let bestDist = 240;
+                    let bestDist = 320;
 
                     for (const [key, existing] of map.entries()) {
                       if (matchedExistingKeys.has(key)) continue;
@@ -316,7 +319,9 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
                       ex.plate = obj.plate;
                       ex.lastSeen = currTime;
                     } else {
-                      const prefix = obj.is_human ? 'HUM' : obj.class.toUpperCase().slice(0, 3);
+                      const prefix = obj.is_human
+                        ? 'HUM'
+                        : (obj.is_vehicle ? 'VEH' : obj.class.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3));
                       const newId = `TRK-${prefix}-${Math.floor(10 + Math.random() * 89)}`;
                       matchedExistingKeys.add(newId);
                       map.set(newId, {
@@ -345,9 +350,9 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
                     }
                   });
 
-                  // Cull stale objects not seen in > 1400ms
+                  // Cull stale objects not seen in > 2000ms
                   for (const [key, item] of map.entries()) {
-                    if (currTime - item.lastSeen > 1400) {
+                    if (currTime - item.lastSeen > 2000) {
                       map.delete(key);
                     }
                   }
@@ -360,8 +365,8 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
                   setIsMotionDetected(currentItems.length > 0);
                   if (currentItems.length > 0) {
                     const primary = currentItems.find(i => i.is_human) || currentItems[0];
-                    setDynamicTargetType(primary.label);
-                    setAiClassLabel(primary.label);
+                    setDynamicTargetType(res.label || primary.label);
+                    setAiClassLabel(res.label || primary.label);
                     setOpticalSpeed(primary.speed || (hasHuman ? 3 : 40));
                     setIsSpeedViolation(primary.is_vehicle && primary.speed > 68);
                   }
@@ -555,15 +560,15 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
         if (stnCanvasRef.current) {
           const stnCtx = stnCanvasRef.current.getContext('2d');
           if (stnCtx) {
-            const primary = items.find(i => i.is_human) || items[0];
-            if (primary) {
+            const activeTarget = (selectedTargetId ? items.find(i => i.id === selectedTargetId) : null) || items[0];
+            if (activeTarget) {
               stnCtx.drawImage(
                 video,
-                Math.max(0, primary.x), Math.max(0, primary.y), Math.max(20, primary.w), Math.max(20, primary.h),
+                Math.max(0, activeTarget.x), Math.max(0, activeTarget.y), Math.max(20, activeTarget.w), Math.max(20, activeTarget.h),
                 0, 0, 240, 60
               );
               const stnScan = ((Date.now() / 10) % 60);
-              stnCtx.fillStyle = primary.is_human ? 'rgba(16, 185, 129, 0.45)' : 'rgba(6, 182, 212, 0.45)';
+              stnCtx.fillStyle = activeTarget.is_human ? 'rgba(16, 185, 129, 0.45)' : `${activeTarget.color || '#06b6d4'}66`;
               stnCtx.fillRect(0, stnScan, 240, 2);
             } else {
               stnCtx.drawImage(video, w * 0.35, h * 0.35, w * 0.3, h * 0.3, 0, 0, 240, 60);
@@ -746,16 +751,21 @@ export const CameraInspectModal: React.FC<CameraInspectModalProps> = ({
             )}
 
             {/* Viewport Floating HUD Overlays */}
-            <div className="absolute top-4 left-4 pointer-events-none flex items-center gap-2 text-[10px] font-mono text-slate-300 bg-slate-950/80 backdrop-blur-md px-2.5 py-1 rounded border border-slate-800">
+            <div className="absolute top-4 left-4 pointer-events-none flex items-center gap-2 text-[10px] font-mono text-slate-300 bg-slate-950/85 backdrop-blur-md px-2.5 py-1 rounded-lg border border-slate-800 shadow-lg">
               <span className={`w-2 h-2 rounded-full ${feedMode === 'webcam' ? (isMotionDetected ? 'bg-emerald-400 animate-ping' : 'bg-cyan-400') : 'bg-red-500 animate-ping'}`}></span>
               <span>LIVE FEED: {camera.id}</span>
-              <span className="text-slate-500">|</span>
+              <span className="text-slate-600">|</span>
               <span className="text-emerald-400 font-bold">{camera.fps} FPS</span>
               {feedMode === 'webcam' && (
                 <>
-                  <span className="text-slate-500">|</span>
-                  <span className={isMotionDetected ? "text-cyan-300 font-bold" : "text-slate-400"}>
-                    {isMotionDetected ? `TRACKING (${opticalSpeed} km/h)` : 'SEARCHING SECTOR'}
+                  <span className="text-slate-600">|</span>
+                  <span className={isMotionDetected ? "text-cyan-300 font-bold flex items-center gap-1" : "text-slate-400"}>
+                    {isMotionDetected ? (
+                      <>
+                        <span className="text-emerald-400 font-bold">{liveTrackedList.length} TARGET{liveTrackedList.length > 1 ? 'S' : ''}</span>
+                        <span className="text-slate-400">({aiLatency}ms)</span>
+                      </>
+                    ) : 'RADAR SCANNING'}
                   </span>
                 </>
               )}

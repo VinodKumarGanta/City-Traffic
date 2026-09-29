@@ -26,14 +26,35 @@ from psycopg2.extras import RealDictCursor
 from flask import Flask, Response, request, jsonify
 from dotenv import load_dotenv
 
+# ngrok Secure Tunnel Manager (multi-location remote camera support)
+try:
+    from ngrok_manager import tunnel_manager
+    print("[ngrok] NgrokTunnelManager imported successfully.")
+except Exception as _ngrok_err:
+    tunnel_manager = None
+    print(f"[ngrok] NgrokTunnelManager unavailable: {_ngrok_err}")
+
 # Initialize Real Object & Human Cascades and Ultralytics YOLO
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 plate_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_russian_plate_number.xml')
-yolo_model = None
+
+yolo_model = None       # Primary: YOLOv8m (medium) — high accuracy for traffic
+yolo_model_small = None # Secondary: YOLOv8n — fast pass for small/personal objects
+
 try:
     from ultralytics import YOLO
-    yolo_model = YOLO('yolov8n.pt')
-    print("[AI Vision] Ultralytics YOLOv8 loaded successfully.")
+    # Try YOLOv8m first (better mAP: 50.2 vs 37.3 on COCO); downloads ~26MB if absent
+    try:
+        yolo_model = YOLO('yolov8m.pt')
+        print("[AI Vision] YOLOv8m (medium) loaded — high accuracy mode ACTIVE.")
+    except Exception as em:
+        print(f"[AI Vision] YOLOv8m unavailable ({em}), falling back to YOLOv8n.")
+        yolo_model = YOLO('yolov8n.pt')
+        print("[AI Vision] YOLOv8n (nano) loaded as fallback.")
+
+    # Lightweight second pass for small objects (always nano for speed)
+    yolo_model_small = YOLO('yolov8n.pt')
+    print("[AI Vision] YOLOv8n small-object pass loaded.")
 except Exception as e:
     print(f"[AI Vision] YOLOv8 load notice: {e}")
 
@@ -57,13 +78,35 @@ def add_cors_headers(response):
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, apikey'
     return response
 
-# Database Connection Pool
-try:
-    db_pool = ThreadedConnectionPool(minconn=2, maxconn=20, dsn=NEON_DATABASE_URL)
-    print("[PostgreSQL] Initialized ThreadedConnectionPool (2-20 connections)")
-except Exception as e:
-    print(f"[PostgreSQL] Failed to initialize connection pool: {e}")
-    db_pool = None
+# Database Connection Pool — with background retry so the server starts
+# even when Neon's serverless pooler is cold (first connection takes 2-6 s).
+db_pool = None
+
+def _init_db_pool(retries=5, delay=3):
+    global db_pool
+    for attempt in range(retries):
+        try:
+            pool = ThreadedConnectionPool(minconn=1, maxconn=20, dsn=NEON_DATABASE_URL)
+            # Validate the pool with a quick ping
+            test_conn = pool.getconn()
+            test_conn.cursor().execute("SELECT 1")
+            pool.putconn(test_conn)
+            db_pool = pool
+            print(f"[PostgreSQL] ThreadedConnectionPool ready (attempt {attempt + 1})")
+            return
+        except Exception as e:
+            print(f"[PostgreSQL] Pool init attempt {attempt + 1}/{retries} failed: {e}")
+            time.sleep(delay)
+    print("[PostgreSQL] WARNING: Could not connect to database after all retries.")
+
+# Try once immediately (fast path when DB is already warm)
+_init_db_pool(retries=1, delay=0)
+# If still None, retry in background so Flask starts serving immediately
+if db_pool is None:
+    def _retry_bg():
+        time.sleep(2)
+        _init_db_pool(retries=8, delay=4)
+    threading.Thread(target=_retry_bg, daemon=True).start()
 
 @contextmanager
 def get_db():
@@ -740,6 +783,179 @@ def release_all_cameras():
     manager.release_camera()
     return jsonify({"success": True, "released": "all"})
 
+
+# =====================================================================
+# NGROK SECURE TUNNEL & REMOTE NODE MANAGEMENT
+# =====================================================================
+
+@app.route('/api/ngrok/status', methods=['GET'])
+def ngrok_status():
+    """Returns current tunnel list and registered remote node status."""
+    if tunnel_manager is None:
+        return jsonify({"error": "ngrok manager not available", "pyngrok_available": False}), 503
+    return jsonify(tunnel_manager.get_status())
+
+
+@app.route('/api/ngrok/start', methods=['POST'])
+def ngrok_start():
+    """
+    Start an ngrok tunnel.
+    Body: { "port": 5001, "name": "main", "proto": "http" }
+    """
+    if tunnel_manager is None:
+        return jsonify({"error": "ngrok manager not available"}), 503
+    data = request.get_json(force=True, silent=True) or {}
+    port = int(data.get("port", PORT))
+    name = data.get("name", "main")
+    proto = data.get("proto", "http")
+    result = tunnel_manager.start_tunnel(port=port, name=name, proto=proto)
+    if "error" in result:
+        return jsonify(result), 400
+    return jsonify(result)
+
+
+@app.route('/api/ngrok/stop', methods=['POST'])
+def ngrok_stop():
+    """
+    Stop a named ngrok tunnel.
+    Body: { "name": "main" }
+    """
+    if tunnel_manager is None:
+        return jsonify({"error": "ngrok manager not available"}), 503
+    data = request.get_json(force=True, silent=True) or {}
+    name = data.get("name", "main")
+    result = tunnel_manager.stop_tunnel(name)
+    return jsonify(result)
+
+
+@app.route('/api/ngrok/auth', methods=['POST'])
+def ngrok_set_auth():
+    """
+    Save ngrok authtoken.
+    Body: { "token": "YOUR_NGROK_AUTHTOKEN" }
+    """
+    if tunnel_manager is None:
+        return jsonify({"error": "ngrok manager not available"}), 503
+    data = request.get_json(force=True, silent=True) or {}
+    token = data.get("token", "").strip()
+    if not token:
+        return jsonify({"error": "Missing 'token' field"}), 400
+    ok = tunnel_manager.configure_authtoken(token)
+    if ok:
+        return jsonify({"success": True, "message": "Authtoken saved to .env"})
+    return jsonify({"error": "Failed to configure authtoken"}), 500
+
+
+@app.route('/api/ngrok/register_node', methods=['POST'])
+def ngrok_register_node():
+    """
+    Called by webcam_agent.py on remote laptops to register as a camera node.
+    Body: { node_id, public_url, secret, camera_id, label, lat, lng, ip }
+    """
+    if tunnel_manager is None:
+        return jsonify({"error": "ngrok manager not available"}), 503
+    data = request.get_json(force=True, silent=True) or {}
+    required = ["node_id", "public_url", "secret"]
+    for f in required:
+        if not data.get(f):
+            return jsonify({"error": f"Missing required field: {f}"}), 400
+    result = tunnel_manager.register_node(
+        node_id=data["node_id"],
+        public_url=data["public_url"],
+        secret=data["secret"],
+        camera_id=data.get("camera_id", ""),
+        label=data.get("label", ""),
+        lat=float(data.get("lat", 0)),
+        lng=float(data.get("lng", 0)),
+        ip=data.get("ip", ""),
+    )
+    if "error" in result:
+        return jsonify(result), 403
+    return jsonify(result)
+
+
+@app.route('/api/ngrok/heartbeat', methods=['POST'])
+def ngrok_heartbeat():
+    """Keep a registered node alive. Body: { node_id, secret }"""
+    if tunnel_manager is None:
+        return jsonify({"error": "ngrok manager not available"}), 503
+    data = request.get_json(force=True, silent=True) or {}
+    result = tunnel_manager.heartbeat_node(
+        node_id=data.get("node_id", ""),
+        secret=data.get("secret", ""),
+    )
+    if "error" in result:
+        return jsonify(result), 403
+    return jsonify(result)
+
+
+@app.route('/api/ngrok/unregister_node', methods=['POST'])
+def ngrok_unregister_node():
+    """Remove a node from registry. Body: { node_id, secret }"""
+    if tunnel_manager is None:
+        return jsonify({"error": "ngrok manager not available"}), 503
+    data = request.get_json(force=True, silent=True) or {}
+    result = tunnel_manager.unregister_node(
+        node_id=data.get("node_id", ""),
+        secret=data.get("secret", ""),
+    )
+    if "error" in result:
+        return jsonify(result), 403
+    return jsonify(result)
+
+
+@app.route('/api/ngrok/nodes', methods=['GET'])
+def ngrok_list_nodes():
+    """List all registered remote nodes with online/offline status."""
+    if tunnel_manager is None:
+        return jsonify({"nodes": [], "count": 0})
+    nodes = tunnel_manager.list_nodes()
+    return jsonify({"nodes": nodes, "count": len(nodes)})
+
+
+@app.route('/api/ngrok/add_node_as_camera', methods=['POST'])
+def ngrok_add_node_as_camera():
+    """
+    Register a remote node as a formal Camera in the PostgreSQL DB
+    so it appears in the Camera Matrix view.
+    Body: { "node_id": "abc123" }
+    """
+    if tunnel_manager is None:
+        return jsonify({"error": "ngrok manager not available"}), 503
+    data = request.get_json(force=True, silent=True) or {}
+    node_id = data.get("node_id", "")
+    nodes = {n["node_id"]: n for n in tunnel_manager.list_nodes()}
+    node = nodes.get(node_id)
+    if not node:
+        return jsonify({"error": f"Node '{node_id}' not found"}), 404
+    try:
+        with get_db() as cur:
+            cur.execute("""
+                INSERT INTO cameras (id, sector_id, location_name, lat, lng, status, fps,
+                    total_detections_today, heading_deg, ip_address, model)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    location_name = EXCLUDED.location_name,
+                    status = EXCLUDED.status,
+                    ip_address = EXCLUDED.ip_address;
+            """, (
+                node["camera_id"], "SEC-REMOTE", node["label"],
+                float(node.get("lat", 17.44)), float(node.get("lng", 78.38)),
+                "online" if node["status"] == "online" else "warning",
+                30, 0, 0, node.get("ip", node["public_url"]), "Remote-ngrok-Agent"
+            ))
+        # Also set as live stream source so video_feed works
+        manager.set_source(node["camera_id"], node["stream_url"])
+        return jsonify({
+            "success": True,
+            "camera_id": node["camera_id"],
+            "stream_url": node["stream_url"],
+            "message": f"Camera '{node['camera_id']}' registered in DB and live feed active."
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/api/ai/detect_frame', methods=['POST'])
 def ai_detect_frame():
     t_start = time.time()
@@ -763,95 +979,254 @@ def ai_detect_frame():
         objects = []
         is_human = False
 
-        # Curated Surveillance & Traffic Detection Classes:
-        # (friendly_label, is_human, is_vehicle, color_hex, min_conf_percent)
-        VALID_DETECTION_CLASSES = {
-            'person': ('Person (Human)', True, False, '#10b981', 38.0),
-            'cell phone': ('Smartphone', False, False, '#06b6d4', 42.0),
-            'laptop': ('Laptop Computer', False, False, '#06b6d4', 42.0),
-            'bottle': ('Water Bottle', False, False, '#38bdf8', 40.0),
-            'cup': ('Cup / Drink', False, False, '#38bdf8', 40.0),
-            'chair': ('Chair', False, False, '#a855f7', 40.0),
-            'backpack': ('Backpack', False, False, '#a855f7', 42.0),
-            'handbag': ('Handbag', False, False, '#a855f7', 42.0),
-            'book': ('Book', False, False, '#a855f7', 42.0),
-            'umbrella': ('Umbrella', False, False, '#a855f7', 42.0),
-            'mouse': ('Computer Mouse', False, False, '#06b6d4', 42.0),
-            'keyboard': ('Keyboard', False, False, '#06b6d4', 42.0),
-            'tv': ('Monitor / Screen', False, False, '#06b6d4', 42.0),
-            'car': ('Car', False, True, '#f59e0b', 40.0),
-            'motorcycle': ('Motorcycle', False, True, '#f59e0b', 40.0),
-            'bus': ('Bus', False, True, '#f59e0b', 40.0),
-            'truck': ('Truck', False, True, '#f59e0b', 40.0),
-            'bicycle': ('Bicycle', False, True, '#f59e0b', 40.0),
-            'traffic light': ('Traffic Signal', False, False, '#fbbf24', 45.0),
-            'stop sign': ('Stop Sign', False, False, '#ef4444', 45.0)
+        # Comprehensive 80-Class COCO Real-World Object Taxonomy:
+        # Format: (friendly_label, is_human, is_vehicle, color_hex, min_conf_percent, category)
+        COCO_CLASS_TAXONOMY = {
+            # Person / Human Biometrics
+            'person': ('Person (Human)', True, False, '#10b981', 22.0, 'human'),
+
+            # Vehicles & Urban Mobility
+            'bicycle': ('Bicycle', False, True, '#f59e0b', 20.0, 'vehicle'),
+            'car': ('Car', False, True, '#f59e0b', 20.0, 'vehicle'),
+            'motorcycle': ('Motorcycle', False, True, '#f59e0b', 20.0, 'vehicle'),
+            'airplane': ('Airplane', False, True, '#f59e0b', 25.0, 'vehicle'),
+            'bus': ('Bus', False, True, '#f59e0b', 20.0, 'vehicle'),
+            'train': ('Train', False, True, '#f59e0b', 25.0, 'vehicle'),
+            'truck': ('Truck', False, True, '#f59e0b', 20.0, 'vehicle'),
+            'boat': ('Boat / Watercraft', False, True, '#f59e0b', 25.0, 'vehicle'),
+
+            # Outdoor & Traffic Infrastructure
+            'traffic light': ('Traffic Signal', False, False, '#fbbf24', 25.0, 'traffic'),
+            'fire hydrant': ('Fire Hydrant', False, False, '#ef4444', 25.0, 'traffic'),
+            'stop sign': ('Stop Sign', False, False, '#ef4444', 25.0, 'traffic'),
+            'parking meter': ('Parking Meter', False, False, '#fbbf24', 25.0, 'traffic'),
+            'bench': ('Bench', False, False, '#8b5cf6', 22.0, 'furniture'),
+
+            # Animals & Domestic Pets
+            'bird': ('Bird', False, False, '#ec4899', 22.0, 'animal'),
+            'cat': ('Cat (Pet)', False, False, '#ec4899', 22.0, 'animal'),
+            'dog': ('Dog (Pet)', False, False, '#ec4899', 22.0, 'animal'),
+            'horse': ('Horse', False, False, '#ec4899', 22.0, 'animal'),
+            'sheep': ('Sheep', False, False, '#ec4899', 25.0, 'animal'),
+            'cow': ('Cow', False, False, '#ec4899', 25.0, 'animal'),
+            'elephant': ('Elephant', False, False, '#ec4899', 25.0, 'animal'),
+            'bear': ('Bear', False, False, '#ec4899', 25.0, 'animal'),
+            'zebra': ('Zebra', False, False, '#ec4899', 25.0, 'animal'),
+            'giraffe': ('Giraffe', False, False, '#ec4899', 25.0, 'animal'),
+
+            # Accessories & Personal Belongings
+            'backpack': ('Backpack', False, False, '#a855f7', 20.0, 'accessory'),
+            'umbrella': ('Umbrella', False, False, '#a855f7', 20.0, 'accessory'),
+            'handbag': ('Handbag', False, False, '#a855f7', 20.0, 'accessory'),
+            'tie': ('Necktie', False, False, '#a855f7', 20.0, 'accessory'),
+            'suitcase': ('Luggage / Suitcase', False, False, '#a855f7', 22.0, 'accessory'),
+
+            # Sports & Recreational Equipment
+            'frisbee': ('Frisbee', False, False, '#38bdf8', 22.0, 'sports'),
+            'skis': ('Skis', False, False, '#38bdf8', 25.0, 'sports'),
+            'snowboard': ('Snowboard', False, False, '#38bdf8', 25.0, 'sports'),
+            'sports ball': ('Sports Ball', False, False, '#38bdf8', 20.0, 'sports'),
+            'kite': ('Kite', False, False, '#38bdf8', 22.0, 'sports'),
+            'baseball bat': ('Baseball Bat', False, False, '#38bdf8', 22.0, 'sports'),
+            'baseball glove': ('Baseball Glove', False, False, '#38bdf8', 22.0, 'sports'),
+            'skateboard': ('Skateboard', False, False, '#38bdf8', 22.0, 'sports'),
+            'surfboard': ('Surfboard', False, False, '#38bdf8', 25.0, 'sports'),
+            'tennis racket': ('Tennis Racket', False, False, '#38bdf8', 22.0, 'sports'),
+
+            # Kitchenware, Bottles & Drinkware
+            'bottle': ('Water Bottle', False, False, '#06b6d4', 20.0, 'handheld'),
+            'wine glass': ('Wine Glass / Goblet', False, False, '#06b6d4', 20.0, 'handheld'),
+            'cup': ('Cup / Drink Mug', False, False, '#06b6d4', 20.0, 'handheld'),
+            'fork': ('Fork', False, False, '#06b6d4', 20.0, 'handheld'),
+            'knife': ('Knife', False, False, '#06b6d4', 20.0, 'handheld'),
+            'spoon': ('Spoon', False, False, '#06b6d4', 20.0, 'handheld'),
+            'bowl': ('Bowl', False, False, '#06b6d4', 20.0, 'handheld'),
+
+            # Food Items
+            'banana': ('Banana', False, False, '#eab308', 20.0, 'food'),
+            'apple': ('Apple', False, False, '#eab308', 20.0, 'food'),
+            'sandwich': ('Sandwich', False, False, '#eab308', 20.0, 'food'),
+            'orange': ('Orange', False, False, '#eab308', 20.0, 'food'),
+            'broccoli': ('Broccoli', False, False, '#eab308', 20.0, 'food'),
+            'carrot': ('Carrot', False, False, '#eab308', 20.0, 'food'),
+            'hot dog': ('Hot Dog', False, False, '#eab308', 20.0, 'food'),
+            'pizza': ('Pizza', False, False, '#eab308', 20.0, 'food'),
+            'donut': ('Donut', False, False, '#eab308', 20.0, 'food'),
+            'cake': ('Cake', False, False, '#eab308', 20.0, 'food'),
+
+            # Furniture & Interior
+            'chair': ('Chair / Seat', False, False, '#8b5cf6', 20.0, 'furniture'),
+            'couch': ('Couch / Sofa', False, False, '#8b5cf6', 22.0, 'furniture'),
+            'potted plant': ('Potted Plant', False, False, '#10b981', 20.0, 'furniture'),
+            'bed': ('Bed', False, False, '#8b5cf6', 25.0, 'furniture'),
+            'dining table': ('Desk / Table', False, False, '#8b5cf6', 20.0, 'furniture'),
+            'toilet': ('Sanitary Fixture', False, False, '#94a3b8', 30.0, 'furniture'),
+
+            # Consumer Electronics & Computing
+            'tv': ('Monitor / Display', False, False, '#38bdf8', 20.0, 'device'),
+            'laptop': ('Laptop Computer', False, False, '#06b6d4', 20.0, 'device'),
+            'mouse': ('Computer Mouse', False, False, '#06b6d4', 20.0, 'device'),
+            'remote': ('Remote Control', False, False, '#06b6d4', 20.0, 'device'),
+            'keyboard': ('Keyboard', False, False, '#06b6d4', 20.0, 'device'),
+            'cell phone': ('Smartphone', False, False, '#06b6d4', 20.0, 'device'),
+            'microwave': ('Microwave', False, False, '#94a3b8', 25.0, 'appliance'),
+            'oven': ('Oven', False, False, '#94a3b8', 25.0, 'appliance'),
+            'toaster': ('Toaster', False, False, '#94a3b8', 25.0, 'appliance'),
+            'sink': ('Sink', False, False, '#94a3b8', 25.0, 'appliance'),
+            'refrigerator': ('Refrigerator', False, False, '#94a3b8', 25.0, 'appliance'),
+
+            # Everyday & Handheld Objects
+            # NOTE: COCO doesn't have pen/pencil/ID-card natively.
+            # We map the closest COCO classes and use a post-processing layer below:
+            #   toothbrush  → Pen / Pencil (thin handheld rod shape)
+            #   scissors    → Scissors / Cutter Tool
+            #   book        → Book / Notebook / ID Card Holder
+            #   cell phone  → Smartphone / ID Card (flat rectangular object)
+            'book': ('Book / Notebook', False, False, '#a855f7', 18.0, 'handheld'),
+            'clock': ('Clock / Watch', False, False, '#38bdf8', 20.0, 'handheld'),
+            'vase': ('Vase / Container', False, False, '#a855f7', 22.0, 'handheld'),
+            'scissors': ('Scissors / Cutter', False, False, '#f43f5e', 18.0, 'handheld'),
+            'teddy bear': ('Plush / Toy', False, False, '#ec4899', 20.0, 'handheld'),
+            'hair drier': ('Hair Dryer / Handheld Tool', False, False, '#f43f5e', 20.0, 'handheld'),
+            # toothbrush maps to Pen/Pencil — identical thin cylindrical shape in COCO
+            'toothbrush': ('Pen / Pencil', False, False, '#06b6d4', 18.0, 'handheld'),
         }
 
-        # 1. Primary: Ultralytics YOLOv8 Deep Learning Object Detection (Ultra-Low Latency imgsz=320)
+        # ── Aspect-ratio based small-object reclassifier ──────────────────────────
+        # COCO doesn't have pen/pencil/ID-card as named classes.
+        # We reclassify at runtime using shape heuristics after YOLO detection:
+        #   - cell phone with aspect ratio > 1.6 (landscape) → likely ID Card / Badge
+        #   - toothbrush (already mapped above) → Pen / Pencil
+        #   - book with small area → Notebook / ID Card Holder
+        def reclassify_small_objects(obj, img_w, img_h):
+            bx, by, bw, bh = obj["box"]
+            area = bw * bh
+            ratio = bw / max(1, bh)
+            cls = obj["class"]
+            # ID Card / Badge: flat, small, landscape rectangle
+            if cls == "cell phone" and ratio > 1.4 and area < (img_w * img_h * 0.04):
+                obj["label"] = "ID Card / Badge"
+                obj["category"] = "handheld"
+                obj["color"] = "#f59e0b"
+            # Notebook vs ID Card holder
+            elif cls == "book" and area < (img_w * img_h * 0.03):
+                obj["label"] = "Notebook / ID Holder"
+                obj["category"] = "handheld"
+            return obj
+
+        # ── Helper: parse boxes from YOLO result ──────────────────────────────────
+        def parse_yolo_results(result, model_ref, taxonomy, img_w, img_h, existing_objects, min_box=8):
+            raw = []
+            for box in result.boxes:
+                cls_id = int(box.cls[0].item())
+                cls_name = model_ref.names.get(cls_id, f"obj_{cls_id}").lower()
+                conf_val = round(float(box.conf[0].item()) * 100.0, 1)
+                meta = taxonomy.get(cls_name, (cls_name.title(), False, False, '#06b6d4', 20.0, 'object'))
+                if conf_val < meta[4]:
+                    continue
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                bx_ = max(0, int(x1)); by_ = max(0, int(y1))
+                bw_ = min(img_w - bx_, int(x2 - x1)); bh_ = min(img_h - by_, int(y2 - y1))
+                if bw_ < min_box or bh_ < min_box:
+                    continue
+                raw.append({
+                    "class": cls_name, "label": meta[0],
+                    "is_human": meta[1], "is_vehicle": meta[2],
+                    "category": meta[5], "box": [bx_, by_, bw_, bh_],
+                    "confidence": conf_val, "color": meta[3], "plate": None
+                })
+            return raw
+
+        # ── IoU deduplication across all candidates ───────────────────────────────
+        def iou_dedup(candidates, iou_thresh=0.55):
+            candidates.sort(key=lambda x: x["confidence"], reverse=True)
+            kept = []
+            for c in candidates:
+                bx1, by1, bw1, bh1 = c["box"]
+                dup = False
+                for d in kept:
+                    bx2, by2, bw2, bh2 = d["box"]
+                    # Only suppress if same class
+                    if d["class"] != c["class"]:
+                        continue
+                    ix1 = max(bx1, bx2); iy1 = max(by1, by2)
+                    ix2 = min(bx1+bw1, bx2+bw2); iy2 = min(by1+bh1, by2+bh2)
+                    inter = max(0, ix2-ix1) * max(0, iy2-iy1)
+                    union = bw1*bh1 + bw2*bh2 - inter
+                    if union > 0 and inter/union > iou_thresh:
+                        dup = True; break
+                if not dup:
+                    kept.append(c)
+            return kept
+
+        all_raw_candidates = []
+
+        # ── Pass 1: Primary model (YOLOv8m) — high resolution for traffic & large objects ──
         if yolo_model is not None:
             try:
-                results = yolo_model.predict(img, imgsz=320, conf=0.38, verbose=False)
-                if results and len(results) > 0:
-                    r = results[0]
-                    human_boxes = []
-                    raw_candidates = []
-
-                    for box in r.boxes:
-                        cls_id = int(box.cls[0].item())
-                        cls_name = yolo_model.names.get(cls_id, f"obj_{cls_id}").lower()
-                        conf = round(float(box.conf[0].item()) * 100.0, 1)
-
-                        # Filter out absurd/irrelevant false positives (e.g. toilet on shirt collar)
-                        if cls_name not in VALID_DETECTION_CLASSES:
-                            continue
-
-                        meta = VALID_DETECTION_CLASSES[cls_name]
-                        min_conf = meta[4]
-                        if conf < min_conf:
-                            continue
-
-                        x1, y1, x2, y2 = box.xyxy[0].tolist()
-                        bx = max(0, int(x1))
-                        by = max(0, int(y1))
-                        bw = min(w - bx, int(x2 - x1))
-                        bh = min(h - by, int(y2 - y1))
-
-                        if meta[1]:  # is_human
-                            is_human = True
-                            human_boxes.append((bx, by, bw, bh))
-
-                        raw_candidates.append({
-                            "class": cls_name,
-                            "label": meta[0],
-                            "is_human": meta[1],
-                            "is_vehicle": meta[2],
-                            "box": [bx, by, bw, bh],
-                            "confidence": conf,
-                            "color": meta[3],
-                            "plate": None
-                        })
-
-                    # Filter out spurious items that fall completely inside a person's chest
-                    for item in raw_candidates:
-                        if not item["is_human"] and not item["is_vehicle"] and item["class"] in ['chair', 'tv']:
-                            bx, by, bw, bh = item["box"]
-                            cx, cy = bx + bw // 2, by + bh // 2
-                            inside_human = False
-                            for (hx, hy, hw, hh) in human_boxes:
-                                if hx <= cx <= hx + hw and hy <= cy <= hy + hh:
-                                    inside_human = True
-                                    break
-                            if inside_human:
-                                continue
-
-                        item["id"] = f"TRK-{len(objects) + 1:02d}"
-                        objects.append(item)
+                # Use imgsz=640 for maximum detection quality on vehicles/people
+                res1 = yolo_model.predict(img, imgsz=640, conf=0.18, verbose=False)
+                if res1 and len(res1) > 0:
+                    all_raw_candidates += parse_yolo_results(
+                        res1[0], yolo_model, COCO_CLASS_TAXONOMY, w, h, objects, min_box=10
+                    )
             except Exception as yerr:
-                print(f"[YOLO Inference Warning]: {yerr}")
+                print(f"[YOLO Pass-1 Warning]: {yerr}")
 
-        # 2. Fallback to Haar Cascades if YOLO returned nothing or is not available
-        if len(objects) == 0:
+        # ── Pass 2: Small-object model (YOLOv8n) — run only 2 diagonal tiles ──────
+        # Only run tiled pass if Pass-1 didn't find small handheld objects yet,
+        # or if no small objects were found at all. This avoids redundant inference.
+        # Use 2 diagonal tiles (top-left + bottom-right) instead of all 4 to halve cost.
+        pass1_small_classes = {'handheld', 'device', 'accessory', 'food', 'sports'}
+        pass1_found_small = any(c.get('category') in pass1_small_classes for c in all_raw_candidates)
+
+        if yolo_model_small is not None and not pass1_found_small:
+            try:
+                # Two diagonal tiles cover the full frame without redundancy
+                tile_h, tile_w = h // 2, w // 2
+                diagonal_tiles = [
+                    (0,      0,      min(tile_w + tile_w // 3, w), min(tile_h + tile_h // 3, h)),  # top-left + overlap
+                    (max(0, tile_w - tile_w // 3), max(0, tile_h - tile_h // 3), w, h),            # bottom-right + overlap
+                ]
+                for (tx1, ty1, tx2, ty2) in diagonal_tiles:
+                    crop = img[ty1:ty2, tx1:tx2]
+                    if crop.size == 0:
+                        continue
+                    res2 = yolo_model_small.predict(crop, imgsz=320, conf=0.22, verbose=False)
+                    if res2 and len(res2) > 0:
+                        tile_raws = parse_yolo_results(
+                            res2[0], yolo_model_small, COCO_CLASS_TAXONOMY,
+                            tx2 - tx1, ty2 - ty1, objects, min_box=6
+                        )
+                        for obj in tile_raws:
+                            obj["box"][0] += tx1
+                            obj["box"][1] += ty1
+                        all_raw_candidates += tile_raws
+            except Exception as yerr2:
+                print(f"[YOLO Pass-2 Small-Object Warning]: {yerr2}")
+
+        # ── Merge, reclassify & deduplicate ───────────────────────────────────────
+        for obj in all_raw_candidates:
+            obj = reclassify_small_objects(obj, w, h)
+            if obj["is_human"]:
+                is_human = True
+
+        final_objects = iou_dedup(all_raw_candidates, iou_thresh=0.55)
+
+        # ── Assign track IDs; prioritise traffic classes in ordering ─────────────
+        # Sort: vehicles first, humans second, rest after
+        def traffic_priority(o):
+            if o["is_vehicle"]: return 0
+            if o["is_human"]:   return 1
+            return 2
+        final_objects.sort(key=lambda o: (traffic_priority(o), -o["confidence"]))
+
+        for item in final_objects:
+            item["id"] = f"TRK-{len(objects) + 1:02d}"
+            objects.append(item)
+
+        # ── Fallback: Haar cascade when YOLO is missing ───────────────────────────
+        if yolo_model is None and yolo_model_small is None and len(objects) == 0:
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(40, 40))
             if len(faces) > 0:
@@ -869,26 +1244,49 @@ def ai_detect_frame():
                         "label": "Person (Human)",
                         "is_human": True,
                         "is_vehicle": False,
+                        "category": "human",
                         "box": [int(bx), int(by), int(bw), int(bh)],
                         "confidence": 98.6,
                         "color": "#10b981",
                         "plate": None
                     })
 
-        primary_label = "Person (Human)" if is_human else (objects[0]["label"] if len(objects) > 0 else "Dynamic Target")
+        categories = list(set(obj.get("category", "object") for obj in objects))
+
+        # Build traffic-priority summary: vehicles first, humans second, other last
+        traffic_objs  = [o for o in objects if o["is_vehicle"]]
+        human_objs    = [o for o in objects if o["is_human"]]
+        other_objs    = [o for o in objects if not o["is_vehicle"] and not o["is_human"]]
+
+        def make_summary_group(group):
+            cnt_map = {}
+            for o in group:
+                cnt_map[o["label"]] = cnt_map.get(o["label"], 0) + 1
+            return [f"{v}x {k}" if v > 1 else k for k, v in cnt_map.items()]
+
+        parts = make_summary_group(traffic_objs) + make_summary_group(human_objs) + make_summary_group(other_objs)
+        summary_str = " • ".join(parts) if parts else "No Objects Detected"
+
+        vehicle_count = len(traffic_objs)
+        human_count   = len(human_objs)
+        traffic_count = vehicle_count + human_count
 
         latency_ms = round((time.time() - t_start) * 1000.0, 1)
 
         return jsonify({
-            "detected": len(objects) > 0,
-            "count": len(objects),
-            "is_human": is_human,
-            "primary_class": "person" if is_human else (objects[0]["class"] if len(objects) > 0 else "none"),
-            "label": primary_label,
-            "objects": objects,
-            "img_width": w,
-            "img_height": h,
-            "latency_ms": latency_ms
+            "detected":       len(objects) > 0,
+            "count":          len(objects),
+            "vehicle_count":  vehicle_count,
+            "human_count":    human_count,
+            "traffic_count":  traffic_count,
+            "is_human":       is_human,
+            "primary_class":  objects[0]["class"] if len(objects) > 0 else "none",
+            "label":          summary_str,
+            "objects":        objects,
+            "categories":     categories,
+            "img_width":      w,
+            "img_height":     h,
+            "latency_ms":     latency_ms
         })
     except Exception as err:
         return jsonify({"error": str(err)}), 500

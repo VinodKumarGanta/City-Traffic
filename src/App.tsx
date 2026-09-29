@@ -13,6 +13,7 @@ import { MobileView } from './views/MobileView';
 import { CitizenCommuterView } from './views/CitizenCommuterView';
 import { PublicChallanView } from './views/PublicChallanView';
 import { GreenCorridorView } from './views/GreenCorridorView';
+import { RemoteAccessView } from './views/RemoteAccessView';
 import { MobileAccessModal } from './components/common/MobileAccessModal';
 import { TrafficStoreProvider, useTrafficStore } from './state/TrafficStore';
 
@@ -117,6 +118,9 @@ function CommandShell() {
           )}
           {s.currentView === 'greencorridor' && (
             <GreenCorridorView cameras={s.cameras} />
+          )}
+          {s.currentView === 'remote' && (
+            <RemoteAccessView />
           )}
         </main>
       </div>

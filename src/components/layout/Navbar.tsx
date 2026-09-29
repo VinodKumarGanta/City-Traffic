@@ -11,10 +11,12 @@ import {
   Unlock,
   MoreHorizontal,
   Bell,
+  Globe,
 } from 'lucide-react';
 import { audioAlertService } from '../../services/audioAlertService';
 import { CITY_OPTIONS } from '../../constants/cities';
 import type { PostgresConnectionStatus } from '../../services/dbService';
+import { getApiBaseUrl } from '../../services/apiConfig';
 
 interface NavbarProps {
   currentCity: string;
@@ -43,6 +45,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   const [timeStr, setTimeStr] = useState('');
   const [isAudioMuted, setIsAudioMuted] = useState(audioAlertService.getMuted());
   const [menuOpen, setMenuOpen] = useState(false);
+  const [tunnelActive, setTunnelActive] = useState(false);
+  const [tunnelNodes, setTunnelNodes] = useState(0);
 
   useEffect(() => {
     const unsub = audioAlertService.subscribe(() => {
@@ -65,6 +69,23 @@ export const Navbar: React.FC<NavbarProps> = ({
     e.preventDefault();
     if (searchQuery.trim()) onSearch(searchQuery.trim());
   };
+
+  // Poll ngrok status every 15s for the navbar badge
+  useEffect(() => {
+    const pollNgrok = async () => {
+      try {
+        const res = await fetch(`${getApiBaseUrl()}/api/ngrok/status`, { signal: AbortSignal.timeout(4000) });
+        if (res.ok) {
+          const data = await res.json();
+          setTunnelActive((data.active_tunnels || 0) > 0);
+          setTunnelNodes(data.online_nodes || 0);
+        }
+      } catch { /* silent */ }
+    };
+    pollNgrok();
+    const iv = setInterval(pollNgrok, 15000);
+    return () => clearInterval(iv);
+  }, []);
 
   return (
     <header className="h-14 bg-slate-950/95 border-b border-slate-800 px-3 flex items-center justify-between z-30 sticky top-0 gap-3">
@@ -119,6 +140,16 @@ export const Navbar: React.FC<NavbarProps> = ({
             title={connection?.message || 'Gateway'}
           />
           <span className="hidden lg:inline">{connection?.connected ? 'Live' : 'Offline'}</span>
+        </div>
+
+        {/* ngrok tunnel status badge */}
+        <div className={`hidden lg:flex items-center gap-1.5 text-[10px] font-mono px-2 py-1 rounded-full border ${
+          tunnelActive
+            ? 'bg-violet-950/40 border-violet-500/30 text-violet-300'
+            : 'bg-slate-900 border-slate-800 text-slate-600'
+        }`} title={tunnelActive ? `ngrok tunnel active — ${tunnelNodes} node(s) online` : 'No ngrok tunnel'}>
+          <Globe className="w-3 h-3" />
+          {tunnelActive ? `TUNNEL${tunnelNodes > 0 ? ` · ${tunnelNodes}` : ''}` : 'TUNNEL: OFF'}
         </div>
 
         <button

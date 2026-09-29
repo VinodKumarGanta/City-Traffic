@@ -12,6 +12,7 @@ import {
   Compass,
   Receipt,
   Siren,
+  Globe,
 } from 'lucide-react';
 
 export type ViewId =
@@ -26,7 +27,8 @@ export type ViewId =
   | 'mobile'
   | 'citizen'
   | 'challan'
-  | 'greencorridor';
+  | 'greencorridor'
+  | 'remote';
 
 interface NavItem {
   id: ViewId;
@@ -55,6 +57,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'analytics', label: 'Analytics', icon: BarChart3 },
     { id: 'alerts', label: 'Alerts', icon: Bell, alert: activeAlertsCount > 0 },
     { id: 'reports', label: 'Reports', icon: FileText },
+    { id: 'remote', label: 'Remote Access', icon: Globe },
   ];
 
   const publicItems: NavItem[] = [

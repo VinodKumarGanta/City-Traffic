@@ -1,16 +1,31 @@
 /**
  * Resolves the backend API base URL dynamically.
- * - When accessed locally from PC: 'http://localhost:5001'
- * - When accessed by friends/mobile phones on LAN: 'http://<LAN_IP>:5001'
- * - Can also be overridden by VITE_API_BASE_URL env var.
+ * Priority order:
+ *   1. VITE_API_BASE_URL env var (set in Cloudflare Pages dashboard or .env.production)
+ *   2. localhost:5001 when running locally (dev mode)
+ *   3. Empty string + graceful offline mode when deployed without a backend URL
  */
 export function getApiBaseUrl(): string {
-  const metaEnv = (import.meta as unknown as { env?: { VITE_API_BASE_URL?: string } }).env || {};
+  const metaEnv = (import.meta as unknown as { env?: { VITE_API_BASE_URL?: string; MODE?: string } }).env || {};
+
+  // 1. Explicit override — highest priority (set this in Cloudflare Pages env vars)
   if (metaEnv.VITE_API_BASE_URL) {
-    return metaEnv.VITE_API_BASE_URL;
+    return metaEnv.VITE_API_BASE_URL.replace(/\/$/, ''); // strip trailing slash
   }
-  const host = typeof window !== 'undefined' && window.location.hostname ? window.location.hostname : 'localhost';
-  return `http://${host}:5001`;
+
+  // 2. Local development — use localhost
+  if (typeof window !== 'undefined') {
+    const hostname = window.location.hostname;
+    // If running on localhost or LAN IP → backend is on same machine port 5001
+    if (hostname === 'localhost' || hostname === '127.0.0.1' || /^192\.168\.|^10\.|^172\./.test(hostname)) {
+      return `http://${hostname}:5001`;
+    }
+    // 3. Deployed on Cloudflare Pages / custom domain without backend URL configured
+    // Return empty so the app loads in "offline/demo" mode instead of crashing
+    return '';
+  }
+
+  return 'http://localhost:5001';
 }
 
 // Global cached gateway status to prevent request flooding from multiple camera cards
